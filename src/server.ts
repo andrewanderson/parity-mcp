@@ -120,7 +120,13 @@ function leagueMatches(ref: LeagueRef, league: SupportedLeague): boolean {
   return "name" in ref ? ref.name === league.name : ref.id === league.id;
 }
 
-/** The single supporting league for one game, by probing supported leagues. */
+/**
+ * The single supporting league for one game, by probing supported leagues.
+ * Only a not-found in a league is expected during probing and only that ends
+ * with the aggregated GAME_NOT_FOUND. Every other failure (a failed request,
+ * an unsupported league version, a malformed response) is propagated as-is so
+ * callers see the original error class, not a misleading not-found.
+ */
 async function gameForLeague(
   source: DataSource,
   ref: LeagueRef | undefined,
@@ -131,7 +137,9 @@ async function gameForLeague(
     ref === undefined
       ? leagues
       : leagues.filter((league) => leagueMatches(ref, league));
-  let lastError: unknown = null;
+  const leagueLabel =
+    ref === undefined ? "" : ` in league ${"name" in ref ? ref.name : ref.id}`;
+  let lastNotFound: SourceError | null = null;
   for (const league of targets) {
     try {
       const payload = await source.getGame(league, gameId);
@@ -144,13 +152,35 @@ async function gameForLeague(
       }
       return { payload: assembleFullGame(payload), league };
     } catch (cause) {
-      lastError = cause;
+      if (isGameNotFoundError(cause)) {
+        lastNotFound =
+          cause instanceof SourceError
+            ? cause
+            : new SourceError("GAME_NOT_FOUND", String(cause instanceof Error ? cause.message : cause), league);
+        continue;
+      }
+      // Unexpected failure probing this league: keep the original error.
+      throw cause;
     }
   }
+  const detail =
+    lastNotFound === null
+      ? "no supported league could be probed."
+      : `last league probe: ${lastNotFound.message}`;
   throw new SourceError(
     "GAME_NOT_FOUND",
-    `Game ${gameId} not found${ref === undefined ? "" : ` in league ${"name" in ref ? ref.name : ref.id}`} in any supported league: ${String(lastError)}`,
+    `Game ${gameId} not found${leagueLabel === "" ? " in any supported league" : ""}: ${detail}`,
   );
+}
+
+/** True when a probe failure means the game is absent from that league. */
+function isGameNotFoundError(cause: unknown): boolean {
+  if (cause instanceof SourceError) {
+    return cause.code === "GAME_NOT_FOUND";
+  }
+  // Sources with no SourceError type report a missing game with a plain
+  // message; everything else stays a probe failure.
+  return cause instanceof Error && /not found/i.test(cause.message);
 }
 
 /** A tool error result carrying the source error code and message. */

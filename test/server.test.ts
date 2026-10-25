@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createParityServer } from "../src/server.js";
+import { SourceError } from "../src/data/source.js";
 import type { ApiGame, SupportedLeague } from "../src/domain/types.js";
 import type { DataSource, ListGamesOptions } from "../src/data/source.js";
 import { canonicalizeGame } from "../src/data/normalize.js";
@@ -131,6 +132,60 @@ async function call(
   }
   return { ok: true, data: JSON.parse(text) as unknown };
 }
+
+describe("parity_get_game probe error semantics", () => {
+  class FailingLeagueSource implements DataSource {
+    constructor(private readonly code: Parameters<typeof SourceError>[0]) {}
+    async listSupportedLeagues(): Promise<SupportedLeague[]> {
+      return [league24];
+    }
+    async listGames(): Promise<ApiGame[]> {
+      return [];
+    }
+    async getGame(league: { id: number }): Promise<never> {
+      throw new SourceError(this.code, `probe failed for league ${league.id}`, league);
+    }
+  }
+
+  it("propagates a failed league probe instead of collapsing to GAME_NOT_FOUND", async () => {
+    const dataDir = await makeDataDir();
+    const mcp = createParityServer({
+      source: new FailingLeagueSource("REQUEST_FAILED"),
+      dataDir,
+    });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    await client.connect(clientTransport);
+    const result = await call(client, "parity_get_game", { gameId: 1000 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const body = JSON.parse(result.text) as { error: string };
+      expect(body.error).toBe("REQUEST_FAILED");
+    }
+    await client.close();
+  });
+
+  it("reports GAME_NOT_FOUND only when every probed league says the game is absent", async () => {
+    const dataDir = await makeDataDir();
+    const mcp = createParityServer({
+      source: new FailingLeagueSource("GAME_NOT_FOUND"),
+      dataDir,
+    });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    await client.connect(clientTransport);
+    const result = await call(client, "parity_get_game", { gameId: 1000 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const body = JSON.parse(result.text) as { error: string; message: string };
+      expect(body.error).toBe("GAME_NOT_FOUND");
+      expect(body.message).toContain("1000");
+    }
+    await client.close();
+  });
+});
 
 describe("parity MCP server tool wiring", () => {
   it("registers exactly the four expected tool names", async () => {
