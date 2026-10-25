@@ -9,6 +9,12 @@ describe("normalizePlayerRef", () => {
     expect(ref.isSubstitute).toBe(true);
   });
 
+  it("trims whitespace on names without a marker", () => {
+    const ref = normalizePlayerRef("  Nadine Cann  ");
+    expect(ref.raw).toBe("  Nadine Cann  ");
+    expect(ref.name).toBe("Nadine Cann");
+  });
+
   it("preserves a plain name exactly", () => {
     const ref = normalizePlayerRef("Nadine cann");
     expect(ref.raw).toBe("Nadine cann");
@@ -40,5 +46,11 @@ describe("parseLocalTimestamp", () => {
     const parsed = parseLocalTimestamp("");
     expect(parsed.timestampSec).toBeNull();
     expect(parsed.timestampLocal).toBe("");
+  });
+
+  it("rejects day rollover like 2/31 instead of rolling into March", () => {
+    const parsed = parseLocalTimestamp("2/31/2026, 6:13:40 PM");
+    expect(parsed.timestampSec).toBeNull();
+    expect(parsed.timestampLocal).toBe("2/31/2026, 6:13:40 PM");
   });
 });
