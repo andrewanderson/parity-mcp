@@ -9,7 +9,7 @@ const SUBSTITUTE_MARKER = /\(S\)$/i;
  */
 export function normalizePlayerRef(raw: RawPlayerRef): PlayerRef {
   const isSubstitute = SUBSTITUTE_MARKER.test(raw);
-  const name = isSubstitute ? raw.replace(SUBSTITUTE_MARKER, "").trim() : raw;
+  const name = raw.replace(SUBSTITUTE_MARKER, "").trim();
   return { raw, name, isSubstitute };
 }
 
@@ -45,7 +45,11 @@ export function parseLocalTimestamp(raw: string): {
   }
 
   const hour = period === "PM" ? (hourTwelve % 12) + 12 : hourTwelve % 12;
-  const timestampSec = new Date(year, month - 1, day, hour, minute, second).getTime() / 1000;
+  const date = new Date(year, month - 1, day, hour, minute, second);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return { timestampLocal: raw, timestampSec: null };
+  }
+  const timestampSec = date.getTime() / 1000;
 
   return { timestampLocal: raw, timestampSec };
 }
