@@ -83,6 +83,14 @@ function identityKey(raw: RawPlayerRef): string {
   return normalizePlayerRef(raw).name.toLowerCase();
 }
 
+/** The stat line whose identity key matches the given key, if any. */
+function statForIdentity(
+  key: string,
+  stats: readonly PlayerStatLine[],
+): PlayerStatLine | undefined {
+  return stats.find((s) => identityKey(s.raw) === key);
+}
+
 /** The literal "Unknown" stats team is invalid source data, not a team assignment. */
 function isValidStatsTeam(team: string | null): team is string {
   return team !== null && team.trim() !== "" && !UNKNOWN_TEAM.test(team);
@@ -91,7 +99,7 @@ function isValidStatsTeam(team: string | null): team is string {
 /** Stats-or-roster-only resolution used as the basis for line-majority. */
 function resolveBaseTeam(name: RawPlayerRef, game: GamePayload): string | null {
   const key = identityKey(name);
-  const stat = game.stats.find((s) => s.name.toLowerCase() === key);
+  const stat = statForIdentity(key, game.stats);
   if (stat !== undefined && isValidStatsTeam(stat.team)) {
     return stat.team;
   }
@@ -117,7 +125,7 @@ export function resolvePlayerTeam(
 ): { team: string | null; teamSource: TeamSource } {
   const key = identityKey(name);
 
-  const stat = game.stats.find((s) => s.name.toLowerCase() === key);
+  const stat = statForIdentity(key, game.stats);
   if (stat !== undefined && isValidStatsTeam(stat.team)) {
     return { team: stat.team, teamSource: "stats" };
   }
@@ -149,8 +157,8 @@ function lineMajorityCandidates(key: string, game: GamePayload): string[] {
   const candidates: string[] = [];
   for (const point of game.game.points) {
     for (const row of [point.offensePlayers, point.defensePlayers]) {
-      if (!row.some((p) => p.name.toLowerCase() === key)) continue;
-      const others = row.filter((p) => p.name.toLowerCase() !== key);
+      if (!row.some((p) => identityKey(p.name) === key)) continue;
+      const others = row.filter((p) => identityKey(p.name) !== key);
       if (others.length === 0) continue;
       let uniform: string | null = null;
       let unanimous = true;
@@ -382,7 +390,7 @@ export function qualityReport(payload: GamePayload): QualityReport {
   // Substitutes absent from every roster: real observed data quirk.
   for (const stat of payload.stats) {
     if (!stat.isSubstitute) continue;
-    const key = stat.name.toLowerCase();
+    const key = identityKey(stat.raw);
     const onRoster =
       payload.game.homeRoster.some((r) => identityKey(r) === key) ||
       payload.game.awayRoster.some((r) => identityKey(r) === key);
@@ -414,7 +422,7 @@ export function qualityReport(payload: GamePayload): QualityReport {
 
 /** Where a normalized identity came from, for warning messages. */
 function actorLabel(payload: GamePayload, lowerKey: string): string {
-  const stat = payload.stats.find((s) => s.name.toLowerCase() === lowerKey);
+  const stat = statForIdentity(lowerKey, payload.stats);
   return stat !== undefined ? stat.raw : lowerKey;
 }
 
