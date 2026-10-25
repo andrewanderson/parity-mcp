@@ -1,6 +1,30 @@
-import type { PlayerRef, RawPlayerRef } from "../domain/types.js";
+import type {
+  ApiGame,
+  Event,
+  EventType,
+  GamePayload,
+  Point,
+  PlayerRef,
+  PlayerStatLine,
+  QualityReport,
+  QualityWarning,
+  RawPlayerRef,
+  SupportedLeague,
+  TeamSource,
+} from "../domain/types.js";
 
 const SUBSTITUTE_MARKER = /\(S\)$/i;
+
+const UNKNOWN_TEAM = /unknown/i;
+
+const EVENT_TYPES: readonly EventType[] = [
+  "PULL",
+  "PASS",
+  "POINT",
+  "DEFENSE",
+  "THROWAWAY",
+  "DROP",
+];
 
 /**
  * Normalize a raw player reference from capture payloads.
@@ -52,4 +76,399 @@ export function parseLocalTimestamp(raw: string): {
   const timestampSec = date.getTime() / 1000;
 
   return { timestampLocal: raw, timestampSec };
+}
+
+/** Case-insensitive identity key for a player reference. */
+function identityKey(raw: RawPlayerRef): string {
+  return normalizePlayerRef(raw).name.toLowerCase();
+}
+
+/** The literal "Unknown" stats team is invalid source data, not a team assignment. */
+function isValidStatsTeam(team: string | null): team is string {
+  return team !== null && team.trim() !== "" && !UNKNOWN_TEAM.test(team);
+}
+
+/** Stats-or-roster-only resolution used as the basis for line-majority. */
+function resolveBaseTeam(name: RawPlayerRef, game: GamePayload): string | null {
+  const key = identityKey(name);
+  const stat = game.stats.find((s) => s.name.toLowerCase() === key);
+  if (stat !== undefined && isValidStatsTeam(stat.team)) {
+    return stat.team;
+  }
+  if (game.game.homeRoster.some((r) => identityKey(r) === key)) {
+    return game.game.homeTeam;
+  }
+  if (game.game.awayRoster.some((r) => identityKey(r) === key)) {
+    return game.game.awayTeam;
+  }
+  return null;
+}
+
+/**
+ * Resolve one player's team on behalf of one game.
+ * Precedence: invalid stats.team values (missing or literally "Unknown") are
+ * invalid data, not a terminal assignment. Then roster membership, then
+ * unanimous known line-majority among the point rows where the player is
+ * recorded, then explicit unknown. Pure: never mutates `game.quality.warnings`.
+ */
+export function resolvePlayerTeam(
+  name: RawPlayerRef,
+  game: GamePayload,
+): { team: string | null; teamSource: TeamSource } {
+  const key = identityKey(name);
+
+  const stat = game.stats.find((s) => s.name.toLowerCase() === key);
+  if (stat !== undefined && isValidStatsTeam(stat.team)) {
+    return { team: stat.team, teamSource: "stats" };
+  }
+
+  const isOnHomeRoster = game.game.homeRoster.some((r) => identityKey(r) === key);
+  const isOnAwayRoster = game.game.awayRoster.some((r) => identityKey(r) === key);
+  if (isOnHomeRoster) {
+    return { team: game.game.homeTeam, teamSource: "roster" };
+  }
+  if (isOnAwayRoster) {
+    return { team: game.game.awayTeam, teamSource: "roster" };
+  }
+
+  const candidates = lineMajorityCandidates(key, game);
+  const distinct = [...new Set(candidates)];
+  if (distinct.length === 1) {
+    return { team: distinct[0], teamSource: "line-majority" };
+  }
+  return { team: null, teamSource: "unknown" };
+}
+
+/**
+ * For each recorded point row containing the player, collect the teams of
+ * every other player via stats or roster only. A row yields a candidate only
+ * when it has at least one other player and all others resolve unanimously.
+ * Multiple divergent unanimities are terminal unknown, not a guess.
+ */
+function lineMajorityCandidates(key: string, game: GamePayload): string[] {
+  const candidates: string[] = [];
+  for (const point of game.game.points) {
+    for (const row of [point.offensePlayers, point.defensePlayers]) {
+      if (!row.some((p) => p.name.toLowerCase() === key)) continue;
+      const others = row.filter((p) => p.name.toLowerCase() !== key);
+      if (others.length === 0) continue;
+      let uniform: string | null = null;
+      let unanimous = true;
+      for (const other of others) {
+        const otherTeam = resolveBaseTeam(other.name, game);
+        if (otherTeam === null) {
+          unanimous = false;
+          break;
+        }
+        if (uniform === null) {
+          uniform = otherTeam;
+        } else if (otherTeam !== uniform) {
+          unanimous = false;
+          break;
+        }
+      }
+      if (unanimous && uniform !== null) {
+        candidates.push(uniform);
+      }
+    }
+  }
+  return candidates;
+}
+
+function normalizeEventType(raw: string): EventType {
+  return EVENT_TYPES.includes(raw as EventType) ? (raw as EventType) : "PASS";
+}
+
+/**
+ * Derive point duration as last minus first usable non-PULL event timestamp.
+ * Null when too few usable timestamps; never a fabricated zero. A real zero
+ * (two same-timestamp events) stays zero.
+ */
+function deriveDurationSec(events: Event[]): number | null {
+  const usable = events
+    .filter((event) => event.type !== "PULL")
+    .map((event) => event.timestampSec)
+    .filter((sec): sec is number => sec !== null);
+  if (usable.length < 2) {
+    return null;
+  }
+  return Math.max(...usable) - Math.min(...usable);
+}
+
+/**
+ * Canonicalize a captured API game into the stable GamePayload shell.
+ * Raw values are preserved, lines are recorded exactly as captured, and
+ * warnings are derived once at the end via `qualityReport`.
+ */
+export function canonicalizeGame(
+  rawGame: ApiGame,
+  league: SupportedLeague,
+): GamePayload {
+  const points: Point[] = rawGame.points.map((rawPoint, index) => {
+    const events: Event[] = rawPoint.events.map((rawEvent) => {
+      const parsed = parseLocalTimestamp(rawEvent.timestamp);
+      return {
+        type: normalizeEventType(rawEvent.type),
+        firstActor: rawEvent.firstActor,
+        secondActor: rawEvent.secondActor,
+        timestamp: rawEvent.timestamp,
+        timestampLocal: parsed.timestampLocal,
+        timestampSec: parsed.timestampSec,
+      };
+    });
+    return {
+      pointNumber: index + 1,
+      offensePlayers: rawPoint.offensePlayers.map(normalizePlayerRef),
+      defensePlayers: rawPoint.defensePlayers.map(normalizePlayerRef),
+      durationSec: deriveDurationSec(events),
+      events,
+    };
+  });
+
+  const stats: PlayerStatLine[] = Object.entries(rawGame.stats).map(
+    ([raw, rawStat]) => ({
+      raw,
+      name: normalizePlayerRef(raw).name,
+      isSubstitute: SUBSTITUTE_MARKER.test(raw),
+      goals: rawStat.goals,
+      assists: rawStat.assists,
+      secondAssists: rawStat.second_assists,
+      dBlocks: rawStat.d_blocks,
+      completions: rawStat.completions,
+      throwAways: rawStat.throw_aways,
+      threwDrops: rawStat.threw_drops,
+      catches: rawStat.catches,
+      drops: rawStat.drops,
+      pulls: rawStat.pulls,
+      callahan: rawStat.callahan,
+      oPointsFor: rawStat.o_points_for,
+      oPointsAgainst: rawStat.o_points_against,
+      dPointsFor: rawStat.d_points_for,
+      dPointsAgainst: rawStat.d_points_against,
+      pointsPlayed: rawStat.points_played,
+      pay: rawStat.pay,
+      team: rawStat.team,
+    }),
+  );
+
+  const payload: GamePayload = {
+    schemaVersion: 1,
+    league: {
+      id: league.id,
+      name: league.name,
+      statValues: "v2",
+      lineSize: league.lineSize,
+      salaryCalc: league.salaryCalc,
+    },
+    game: {
+      id: rawGame.id,
+      week: rawGame.week,
+      status: rawGame.status,
+      date: null,
+      homeTeam: rawGame.homeTeam,
+      awayTeam: rawGame.awayTeam,
+      homeScore: rawGame.homeScore,
+      awayScore: rawGame.awayScore,
+      homeRoster: [...rawGame.homeRoster],
+      awayRoster: [...rawGame.awayRoster],
+      points,
+    },
+    stats,
+    quality: { warnings: [] },
+  };
+
+  return { ...payload, quality: qualityReport(payload) };
+}
+
+/**
+ * Pure data-quality report over a canonical payload. The only owner of
+ * warnings in this layer: every warning is derived from the payload, never
+ * accumulated as a side effect of another function.
+ */
+export function qualityReport(payload: GamePayload): QualityReport {
+  const warnings: QualityWarning[] = [];
+  const lineSize = payload.league.lineSize;
+
+  for (const point of payload.game.points) {
+    const keyToRaw = new Map<string, string>();
+    for (const player of point.offensePlayers) {
+      keyToRaw.set(identityKey(player.raw), player.raw);
+    }
+    for (const player of point.defensePlayers) {
+      const onOffense = keyToRaw.has(identityKey(player.raw));
+      if (onOffense) {
+        warnings.push({
+          code: "PLAYER_ON_BOTH_LINES",
+          message: `${player.raw} is recorded on both lines of point ${point.pointNumber}.`,
+          pointNumber: point.pointNumber,
+          player: player.raw,
+        });
+      }
+    }
+
+    for (const [rowName, row] of [
+      ["offense", point.offensePlayers],
+      ["defense", point.defensePlayers],
+    ] as const) {
+      if (row.length !== lineSize) {
+        warnings.push({
+          code: "LINE_SIZE_MISMATCH",
+          message: `Point ${point.pointNumber} ${rowName} line has ${row.length} players, league lineSize is ${lineSize}.`,
+          pointNumber: point.pointNumber,
+        });
+      }
+      const seenKeys = new Set<string>();
+      for (const player of row) {
+        const key = identityKey(player.raw);
+        if (seenKeys.has(key)) {
+          warnings.push({
+            code: "DUPLICATE_LINE_PLAYER",
+            message: `Point ${point.pointNumber} ${rowName} line records ${player.raw} more than once.`,
+            pointNumber: point.pointNumber,
+            player: player.raw,
+          });
+        }
+        seenKeys.add(key);
+      }
+    }
+
+    const lineKeys = new Set([
+      ...point.offensePlayers.map((p) => identityKey(p.raw)),
+      ...point.defensePlayers.map((p) => identityKey(p.raw)),
+    ]);
+    const outsideActors = new Set<string>();
+    for (const event of point.events) {
+      for (const actor of [event.firstActor, event.secondActor]) {
+        if (actor === null) continue;
+        if (!lineKeys.has(identityKey(actor))) {
+          outsideActors.add(actor.toLowerCase());
+        }
+      }
+    }
+    for (const lowerActor of outsideActors) {
+      warnings.push({
+        code: "ACTOR_OUTSIDE_LINES",
+        message: `An event actor (${actorLabel(payload, lowerActor)}) in point ${point.pointNumber} is not on either recorded line.`,
+        pointNumber: point.pointNumber,
+      });
+    }
+  }
+
+  // Substitute-status conflict: same identity recorded both with and without
+  // the (S) marker among game-recorded sources (stats keys and point lines).
+  const statuses = collectSubStatuses(payload);
+  for (const [key, status] of statuses) {
+    if (status.sub && status.notSub) {
+      warnings.push({
+        code: "SUBSTITUTE_STATUS_CONFLICT",
+        message: `${key} appears both with and without the (S) marker in game ${payload.game.id}.`,
+        player: key,
+      });
+    }
+  }
+
+  // Normalization collision: one identity recorded with multiple raw
+  // spellings differing only by letter case. Accents and spellings are never
+  // altered, so only case-level collisions are reported.
+  const caseCollider = collectCaseCollisions(payload);
+  for (const [key, forms] of caseCollider) {
+    warnings.push({
+      code: "NORMALIZATION_COLLISION",
+      message: `Identity ${key} is recorded with multiple raw spellings (${[...forms].join(", ")}) in game ${payload.game.id}.`,
+      player: key,
+    });
+  }
+
+  // Substitutes absent from every roster: real observed data quirk.
+  for (const stat of payload.stats) {
+    if (!stat.isSubstitute) continue;
+    const key = stat.name.toLowerCase();
+    const onRoster =
+      payload.game.homeRoster.some((r) => identityKey(r) === key) ||
+      payload.game.awayRoster.some((r) => identityKey(r) === key);
+    if (!onRoster) {
+      warnings.push({
+        code: "SUBSTITUTE_NOT_ON_ROSTER",
+        message: `Substitute ${stat.raw} is absent from both rosters in game ${payload.game.id}.`,
+        player: stat.raw,
+      });
+    }
+  }
+
+  // Explicit unknown team, terminal only: invalid stats.team is not a
+  // terminal assignment, so falls through roster and line-majority first.
+  for (const stat of payload.stats) {
+    if (isValidStatsTeam(stat.team)) continue;
+    const resolved = resolvePlayerTeam(stat.raw, payload);
+    if (resolved.teamSource === "unknown") {
+      warnings.push({
+        code: "UNRESOLVED_PLAYER_TEAM",
+        message: `${stat.raw} has no resolvable team in game ${payload.game.id} (stats team ${stat.team === null ? "missing" : stat.team}, absent from both rosters, no unanimous known line-majority).`,
+        player: stat.raw,
+      });
+    }
+  }
+
+  return { warnings };
+}
+
+/** Where a normalized identity came from, for warning messages. */
+function actorLabel(payload: GamePayload, lowerKey: string): string {
+  const stat = payload.stats.find((s) => s.name.toLowerCase() === lowerKey);
+  return stat !== undefined ? stat.raw : lowerKey;
+}
+
+/** Collect (S)-marker statuses per identity across stats keys and lines. */
+function collectSubStatuses(
+  payload: GamePayload,
+): Map<string, { sub: boolean; notSub: boolean }> {
+  const map = new Map<string, { sub: boolean; notSub: boolean }>();
+  const record = (raw: RawPlayerRef): void => {
+    const key = identityKey(raw);
+    const entry = map.get(key) ?? { sub: false, notSub: false };
+    if (SUBSTITUTE_MARKER.test(raw)) {
+      entry.sub = true;
+    } else {
+      entry.notSub = true;
+    }
+    map.set(key, entry);
+  };
+  for (const stat of payload.stats) {
+    record(stat.raw);
+  }
+  for (const point of payload.game.points) {
+    for (const player of [...point.offensePlayers, ...point.defensePlayers]) {
+      record(player.raw);
+    }
+  }
+  return map;
+}
+
+/** Collect raw spellings per case-insensitive identity with >1 casing. */
+function collectCaseCollisions(
+  payload: GamePayload,
+): Map<string, string[]> {
+  const map = new Map<string, Map<string, string>>();
+  const record = (raw: RawPlayerRef): void => {
+    const stripped = normalizePlayerRef(raw).name;
+    const key = stripped.toLowerCase();
+    const spellings = map.get(key) ?? new Map<string, string>();
+    spellings.set(stripped, stripped);
+    map.set(key, spellings);
+  };
+  for (const stat of payload.stats) {
+    record(stat.raw);
+  }
+  for (const point of payload.game.points) {
+    for (const player of [...point.offensePlayers, ...point.defensePlayers]) {
+      record(player.raw);
+    }
+  }
+  const collisions = new Map<string, string[]>();
+  for (const [key, spellings] of map) {
+    if (spellings.size > 1) {
+      collisions.set(key, [...spellings.keys()]);
+    }
+  }
+  return collisions;
 }
