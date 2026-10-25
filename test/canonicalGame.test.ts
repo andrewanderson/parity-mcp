@@ -211,14 +211,48 @@ describe("canonicalizeGame", () => {
     ).toBe(true);
   });
 
-  it("resolves a league with a renamed team via event data, not team name", () => {
+  it("canonicalizes a synthetic v2 league game resolved via roster and event data", () => {
+    // League id/name distinct from either team name; teams are season-scoped,
+    // so resolution here works within this one game's rosters only.
+    const syntheticLeague = {
+      ...league,
+      id: league.id + 1,
+      name: "Weeknight Schedule",
+    } as SupportedLeague;
     const payload = canonicalizeGame(
-      syntheticGame({ homeTeam: "Old Name (Gone)", awayTeam: "Brand New Team" }),
-      league,
+      syntheticGame({
+        homeRoster: ["Quinn Fielder", "Rowan Vale(S)"],
+        awayRoster: ["Casey Brook"],
+      }),
+      syntheticLeague,
     );
-    expect(payload.game.homeTeam).toBe("Old Name (Gone)");
-    expect(payload.game.points[0].events[2].timestampSec).not.toBeNull();
-    expect(payload.league.id).toBe(league.id);
+    expect(payload.league).toEqual({
+      id: league.id + 1,
+      name: "Weeknight Schedule",
+      statValues: "v2",
+      lineSize: league.lineSize,
+      salaryCalc: league.salaryCalc,
+    });
+    // Team names preserved as captured for this game.
+    expect(payload.game.homeTeam).toBe("Team A (Alice)");
+    expect(payload.game.awayTeam).toBe("Team B (Bob)");
+    // Roster-based attribution works within the game's season scope.
+    expect(resolvePlayerTeam("Casey Brook", payload)).toEqual({
+      team: "Team B (Bob)",
+      teamSource: "roster",
+    });
+    // Point and event data preserved intact.
+    const [point] = payload.game.points;
+    expect(point.pointNumber).toBe(1);
+    expect(point.durationSec).toBe(20);
+    expect(point.events[1]).toEqual({
+      type: "PASS",
+      firstActor: "Quinn Fielder",
+      secondActor: "Rowan Vale(S)",
+      timestamp: "3/14/2026, 6:00:10 PM",
+      timestampLocal: "3/14/2026, 6:00:10 PM",
+      timestampSec: expect.any(Number),
+    });
   });
 });
 
