@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/src/server.js",
+    "start": "node dist/server.js",
     "test": "vitest run",
     "type-check": "tsc --noEmit",
     "fixtures:capture": "node scripts/capture-fixtures.mjs"
