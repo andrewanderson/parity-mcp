@@ -107,6 +107,12 @@ export type PlayerStatLine = {
   pointsPlayed: number;
   pay: number;
   team: string | null;
+  /**
+   * Division from the league teams source: `true` is Open, `false` is Women.
+   * Absent when the teams source was unavailable or the player is not on any
+   * league roster; absence is unknown, never a guess.
+   */
+  isOpen?: boolean;
 };
 
 /**

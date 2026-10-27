@@ -1,5 +1,5 @@
 import type { ApiGame, GamePayload, SupportedLeague } from "../domain/types.js";
-import { canonicalizeGame } from "./normalize.js";
+import { buildGenderMap, canonicalizeGame } from "./normalize.js";
 import {
   DataSource,
   SourceError,
@@ -79,9 +79,14 @@ export class ParityApiSource implements DataSource {
     gameId: number | string,
   ): Promise<GamePayload> {
     const resolved = await this.resolveLeague(league);
-    const rawGame = await this.fetchJson<ApiGame>(
+    const gamePromise = this.fetchJson<ApiGame>(
       joinPath(this.baseUrl, `/api/${resolved.id}/games/${gameId}`),
     );
+    // Division data is an enhancement, never a failure: a teams-endpoint
+    // problem degrades to stat lines without `isOpen` rather than failing
+    // the game request.
+    const rawTeams = await this.fetchTeamsTolerant(resolved.id);
+    const rawGame = await gamePromise;
     if (rawGame.league_id !== resolved.id) {
       throw new SourceError(
         "GAME_NOT_FOUND",
@@ -89,7 +94,7 @@ export class ParityApiSource implements DataSource {
         league,
       );
     }
-    return canonicalizeGame(rawGame, resolved);
+    return canonicalizeGame(rawGame, resolved, buildGenderMap(rawTeams));
   }
 
   /** Team rosters as reported by the API, raw and unnormalized. */
@@ -115,6 +120,17 @@ export class ParityApiSource implements DataSource {
   private leagueRegistry(): Promise<ApiLeagueSummary[]> {
     this.registryPromise ??= this.fetchJson<ApiLeagueSummary[]>(this.fullLeagueUrl);
     return this.registryPromise;
+  }
+
+  /** Teams payload for a league, or null when the endpoint fails. */
+  private async fetchTeamsTolerant(leagueId: number): Promise<unknown> {
+    try {
+      return await this.fetchJson<unknown>(
+        joinPath(this.baseUrl, `/api/${leagueId}/teams`),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -83,6 +83,41 @@ function identityKey(raw: RawPlayerRef): string {
   return normalizePlayerRef(raw).name.toLowerCase();
 }
 
+/**
+ * Build an identity-keyed division map from the raw teams payload
+ * (`/api/<id>/teams`): each player entry carries `is_open`, true for the Open
+ * division and false for Women. Keys are normalized player names in lower
+ * case, so substitute markers and case differences never matter. A single
+ * player claimed with conflicting divisions resolves to unknown (dropped),
+ * never a guess. Malformed teams and players are ignored.
+ */
+export function buildGenderMap(
+  rawTeams: unknown,
+): ReadonlyMap<string, boolean> {
+  const map = new Map<string, boolean>();
+  const conflicts = new Set<string>();
+  if (!Array.isArray(rawTeams)) return map;
+  for (const team of rawTeams) {
+    const players = (team as { players?: unknown } | null)?.players;
+    if (!Array.isArray(players)) continue;
+    for (const player of players) {
+      const name = (player as { name?: unknown } | null)?.name;
+      const isOpen = (player as { is_open?: unknown } | null)?.is_open;
+      if (typeof name !== "string" || typeof isOpen !== "boolean") continue;
+      const key = normalizePlayerRef(name).name.toLowerCase();
+      if (conflicts.has(key)) continue;
+      const existing = map.get(key);
+      if (existing !== undefined && existing !== isOpen) {
+        map.delete(key);
+        conflicts.add(key);
+        continue;
+      }
+      map.set(key, isOpen);
+    }
+  }
+  return map;
+}
+
 /** The stat line whose identity key matches the given key, if any. */
 function statForIdentity(
   key: string,
@@ -211,6 +246,7 @@ function deriveDurationSec(events: Event[]): number | null {
 export function canonicalizeGame(
   rawGame: ApiGame,
   league: SupportedLeague,
+  genderMap?: ReadonlyMap<string, boolean>,
 ): GamePayload {
   const points: Point[] = rawGame.points.map((rawPoint, index) => {
     const events: Event[] = rawPoint.events.map((rawEvent) => {
@@ -234,29 +270,36 @@ export function canonicalizeGame(
   });
 
   const stats: PlayerStatLine[] = Object.entries(rawGame.stats).map(
-    ([raw, rawStat]) => ({
-      raw,
-      name: normalizePlayerRef(raw).name,
-      isSubstitute: SUBSTITUTE_MARKER.test(raw),
-      goals: rawStat.goals,
-      assists: rawStat.assists,
-      secondAssists: rawStat.second_assists,
-      dBlocks: rawStat.d_blocks,
-      completions: rawStat.completions,
-      throwAways: rawStat.throw_aways,
-      threwDrops: rawStat.threw_drops,
-      catches: rawStat.catches,
-      drops: rawStat.drops,
-      pulls: rawStat.pulls,
-      callahan: rawStat.callahan,
-      oPointsFor: rawStat.o_points_for,
-      oPointsAgainst: rawStat.o_points_against,
-      dPointsFor: rawStat.d_points_for,
-      dPointsAgainst: rawStat.d_points_against,
-      pointsPlayed: rawStat.points_played,
-      pay: rawStat.pay,
-      team: rawStat.team,
-    }),
+    ([raw, rawStat]) => {
+      const line: PlayerStatLine = {
+        raw,
+        name: normalizePlayerRef(raw).name,
+        isSubstitute: SUBSTITUTE_MARKER.test(raw),
+        goals: rawStat.goals,
+        assists: rawStat.assists,
+        secondAssists: rawStat.second_assists,
+        dBlocks: rawStat.d_blocks,
+        completions: rawStat.completions,
+        throwAways: rawStat.throw_aways,
+        threwDrops: rawStat.threw_drops,
+        catches: rawStat.catches,
+        drops: rawStat.drops,
+        pulls: rawStat.pulls,
+        callahan: rawStat.callahan,
+        oPointsFor: rawStat.o_points_for,
+        oPointsAgainst: rawStat.o_points_against,
+        dPointsFor: rawStat.d_points_for,
+        dPointsAgainst: rawStat.d_points_against,
+        pointsPlayed: rawStat.points_played,
+        pay: rawStat.pay,
+        team: rawStat.team,
+      };
+      if (genderMap !== undefined) {
+        const isOpen = genderMap.get(identityKey(raw));
+        if (isOpen !== undefined) line.isOpen = isOpen;
+      }
+      return line;
+    },
   );
 
   const payload: GamePayload = {
