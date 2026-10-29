@@ -8,6 +8,8 @@ import { SourceError } from "./source.js";
 type IndexEntry = {
   gameId: string;
   gameDataPath: string;
+  /** Curated analysis paths added by the recap skill; preserved on re-persist. */
+  analysisPaths?: string[];
 };
 
 /** The in-memory shape of the persisted index. */
@@ -60,9 +62,12 @@ export async function persistCanonicalGame(
   await mkdir(gamesDir, { recursive: true });
   await atomicWriteJson(gameDataPath, payload);
 
-  // 2. Merge into the existing index and save it atomically.
+  // 2. Merge into the existing index and save it atomically. The entry is
+  //    spread from what is on disk so externally curated fields (such as
+  //    analysisPaths) survive a re-persist; only the ids are owned here.
   const index = await loadIndex(indexPath);
   index.games[gameId] = {
+    ...(index.games[gameId] ?? {}),
     gameId,
     gameDataPath: path.join(GAMES_DIR, `${gameId}.json`),
   };

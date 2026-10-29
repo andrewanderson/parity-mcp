@@ -129,4 +129,23 @@ describe("persistCanonicalGame", () => {
     expect(existsSync(path.join(dataDir, "games", "1000.json"))).toBe(true);
     expect(existsSync(path.join(dataDir, "games", "1188.json"))).toBe(true);
   });
+
+  it("preserves curated analysisPaths when re-persisting the same game", async () => {
+    const dataDir = await makeDataDir();
+    await persistCanonicalGame(payload1000(), dataDir);
+    const indexPath = path.join(dataDir, "index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8")) as {
+      games: Record<string, { gameDataPath: string; analysisPaths?: string[] }>;
+    };
+    index.games["1000"].analysisPaths = ["analysis\\1000\\2026-10-29-000000.md"];
+    await writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
+    await persistCanonicalGame(payload1000(), dataDir);
+    const after = JSON.parse(await readFile(indexPath, "utf8")) as {
+      games: Record<string, { gameDataPath: string; analysisPaths?: string[] }>;
+    };
+    expect(after.games["1000"].analysisPaths).toEqual([
+      "analysis\\1000\\2026-10-29-000000.md",
+    ]);
+    expect(after.games["1000"].gameDataPath).toBe(path.join("games", "1000.json"));
+  });
 });
