@@ -449,6 +449,93 @@ describe("buildPointNotes possession chain", () => {
     expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
     expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
   });
+
+  it("gives an odd scoring possession index when the scoring team held from the start", () => {
+    // PASS (home), THROWAWAY home, THROWAWAY away, PASS (home), POINT home:
+    // two turnover moments put the scoring possession at 3, so it is odd and
+    // the chain claims the scoring team (the offence line) held from the
+    // start, matching the timeline's HOLD.
+    const payload = stretchPayload([
+      linedPoint(
+        [HOME_PAT],
+        [AWAY_BEA],
+        [
+          namedEvent("PASS", HOME_PAT),
+          namedEvent("THROWAWAY", HOME_PAT),
+          namedEvent("THROWAWAY", AWAY_BEA),
+          namedEvent("PASS", HOME_PAT),
+          pointEvent(HOME_PAT),
+        ],
+      ),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(3);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(3);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(1);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(2);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
+    // The chain parity agrees with the line-based label: no disagreement.
+    expect(
+      payload.quality.warnings.filter((w) => w.code === "LINE_EVENT_DISAGREE"),
+    ).toHaveLength(0);
+  });
+
+  it("gives an even scoring possession index when the scoring team did not hold from the start", () => {
+    // THROWAWAY home, then the defence picks up and scores (a BREAK): the
+    // scoring possession is 2, so it is even and the chain claims the scoring
+    // team did not hold from the start, matching the timeline's BREAK.
+    const payload = stretchPayload([
+      linedPoint(
+        [HOME_PAT],
+        [AWAY_BEA],
+        [
+          namedEvent("THROWAWAY", HOME_PAT),
+          namedEvent("PASS", AWAY_BEA),
+          pointEvent(AWAY_BEA),
+        ],
+      ),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(1);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
+    // The chain parity agrees with the line-based label: no disagreement.
+    expect(
+      payload.quality.warnings.filter((w) => w.code === "LINE_EVENT_DISAGREE"),
+    ).toHaveLength(0);
+  });
+
+  it("warns when the chain parity disagrees with the line-based hold or break", () => {
+    // The lines name home as the offence line and the home scorer resolves to
+    // home (a HOLD by the timeline), but the events put one turnover moment
+    // before the goal: the chain makes the scoring possession 2 (even), which
+    // says the scoring team did not hold the disc when the point started.
+    // The quality report carries a warning naming the point and the team.
+    const payload = stretchPayload([
+      linedPoint(
+        [HOME_PAT],
+        [AWAY_BEA],
+        [
+          namedEvent("THROWAWAY", HOME_PAT),
+          defenseEvent(AWAY_BEA),
+          namedEvent("PASS", HOME_PAT),
+          pointEvent(HOME_PAT),
+        ],
+      ),
+    ]);
+
+    const warnings = payload.quality.warnings.filter(
+      (w) => w.code === "LINE_EVENT_DISAGREE",
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.pointNumber).toBe(1);
+    expect(warnings[0]!.message).toContain("HOLD");
+    expect(warnings[0]!.message).toContain(payload.game.homeTeam);
+  });
 });
 
 const HOME_PAT = "Home Pat";

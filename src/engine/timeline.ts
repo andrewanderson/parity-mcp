@@ -1,9 +1,8 @@
 import type {
   GamePayload,
-  PlayerRef,
   RawPlayerRef,
 } from "../domain/types.js";
-import { resolvePlayerTeam } from "../data/normalize.js";
+import { attribution } from "../data/normalize.js";
 
 /** One scored point in the game's score progression, derived purely from event data. */
 export type ScoreTimelineItem = {
@@ -58,67 +57,12 @@ export type GameStoryFacts = {
   largestComeback: ComebackItem | null;
 };
 
-/** The terminal POINT event of a point, if one was recorded. */
-function pointScoredEvent(point: {
-  events: Array<{ type: string; firstActor: RawPlayerRef | null }>;
-}): { firstActor: RawPlayerRef | null } | null {
-  let found: { firstActor: RawPlayerRef | null } | null = null;
-  for (const event of point.events) {
-    if (event.type === "POINT") {
-      found = event;
-    }
-  }
-  return found;
-}
-
 /**
- * The single team (by identity key) shared by every player on a line, when
- * they all resolve. Mixed or unresolved lines yield null.
+ * Attribute a point's scoring team and its line-based hold/break label from
+ * the recorded POINT event. The implementation lives in `src/data/normalize.ts`
+ * and is shared with `qualityReport`, so the label the timeline reports and
+ * the label the quality stage compares against are always one attribution.
  */
-function lineTeam(players: readonly PlayerRef[], payload: GamePayload): string | null {
-  let team: string | null = null;
-  for (const player of players) {
-    const resolved = resolvePlayerTeam(player.raw, payload).team;
-    if (resolved === null) return null;
-    if (team === null) {
-      team = resolved;
-    } else if (resolved !== team) {
-      return null;
-    }
-  }
-  return team;
-}
-
-/** Attribute a point's scoring team from its recorded POINT event, if any. */
-function attribution(
-  payload: GamePayload,
-  point: GamePayload["game"]["points"][number],
-): {
-  scoringTeam: string | null;
-  scorer: string | null;
-  holdOrBreak: "HOLD" | "BREAK" | null;
-} {
-  const scored = pointScoredEvent(point);
-  if (scored === null) {
-    return { scoringTeam: null, scorer: null, holdOrBreak: null };
-  }
-  const scorer = scored.firstActor;
-  if (scorer === null) {
-    return { scoringTeam: null, scorer, holdOrBreak: null };
-  }
-  const scoringTeam = resolvePlayerTeam(scorer, payload).team;
-  let holdOrBreak: "HOLD" | "BREAK" | null = null;
-  if (scoringTeam !== null) {
-    const offense = lineTeam(point.offensePlayers, payload);
-    const defense = lineTeam(point.defensePlayers, payload);
-    if (scoringTeam === offense) {
-      holdOrBreak = "HOLD";
-    } else if (scoringTeam === defense) {
-      holdOrBreak = "BREAK";
-    }
-  }
-  return { scoringTeam, scorer, holdOrBreak };
-}
 
 /**
  * Which score bucket a scoring team name belongs to. Names are

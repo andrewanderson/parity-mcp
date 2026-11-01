@@ -12,6 +12,7 @@ import type {
   SupportedLeague,
   TeamSource,
 } from "../domain/types.js";
+import { possessionChain } from "../domain/possessionChain.js";
 
 const SUBSTITUTE_MARKER = /\(S\)$/i;
 
@@ -332,6 +333,78 @@ export function canonicalizeGame(
 }
 
 /**
+ * The terminal POINT event of a point, if one was recorded. Multiple POINT
+ * events keep the last recorded one. Moved from the engine's score timeline
+ * so the quality stage attributes points exactly as the timeline does.
+ */
+function pointScoredEvent(point: {
+  events: Array<{ type: string; firstActor: RawPlayerRef | null }>;
+}): { firstActor: RawPlayerRef | null } | null {
+  let found: { firstActor: RawPlayerRef | null } | null = null;
+  for (const event of point.events) {
+    if (event.type === "POINT") {
+      found = event;
+    }
+  }
+  return found;
+}
+
+/**
+ * The single team (by identity key) shared by every player on a line, when
+ * they all resolve. Mixed or unresolved lines yield null.
+ */
+function lineTeam(players: readonly PlayerRef[], payload: GamePayload): string | null {
+  let team: string | null = null;
+  for (const player of players) {
+    const resolved = resolvePlayerTeam(player.raw, payload).team;
+    if (resolved === null) return null;
+    if (team === null) {
+      team = resolved;
+    } else if (resolved !== team) {
+      return null;
+    }
+  }
+  return team;
+}
+
+/**
+ * Attribute a point's scoring team and its line-based hold/break label from
+ * the recorded POINT event. Shared with the engine's score timeline
+ * (`buildScoreTimelineAndStoryFacts` reports this exact label), so the
+ * quality stage compares the possession chain's parity against one
+ * attribution, never a re-derivation.
+ */
+export function attribution(
+  payload: GamePayload,
+  point: Point,
+): {
+  scoringTeam: string | null;
+  scorer: string | null;
+  holdOrBreak: "HOLD" | "BREAK" | null;
+} {
+  const scored = pointScoredEvent(point);
+  if (scored === null) {
+    return { scoringTeam: null, scorer: null, holdOrBreak: null };
+  }
+  const scorer = scored.firstActor;
+  if (scorer === null) {
+    return { scoringTeam: null, scorer, holdOrBreak: null };
+  }
+  const scoringTeam = resolvePlayerTeam(scorer, payload).team;
+  let holdOrBreak: "HOLD" | "BREAK" | null = null;
+  if (scoringTeam !== null) {
+    const offense = lineTeam(point.offensePlayers, payload);
+    const defense = lineTeam(point.defensePlayers, payload);
+    if (scoringTeam === offense) {
+      holdOrBreak = "HOLD";
+    } else if (scoringTeam === defense) {
+      holdOrBreak = "BREAK";
+    }
+  }
+  return { scoringTeam, scorer, holdOrBreak };
+}
+
+/**
  * Pure data-quality report over a canonical payload. The only owner of
  * warnings in this layer: every warning is derived from the payload, never
  * accumulated as a side effect of another function.
@@ -400,6 +473,31 @@ export function qualityReport(payload: GamePayload): QualityReport {
       warnings.push({
         code: "ACTOR_OUTSIDE_LINES",
         message: `An event actor (${actorLabel(payload, lowerActor)}) in point ${point.pointNumber} is not on either recorded line.`,
+        pointNumber: point.pointNumber,
+      });
+    }
+
+    // Line/event disagreement: on a few recorded points (observed with
+    // mid-point substitutions) the recorded lines and the event chain
+    // disagree about who had the disc. The line-based hold/break label is
+    // authoritative; this warning tells the fact sheet the point's lines and
+    // events disagree, so no hold or break is ever stated for the point.
+    const chain = possessionChain(point.events);
+    const eventAttribution = attribution(payload, point);
+    if (
+      eventAttribution.holdOrBreak !== null &&
+      chain.scoringPossessionIndex > 0 &&
+      (chain.scoringPossessionIndex % 2 === 1) !==
+        (eventAttribution.holdOrBreak === "HOLD")
+    ) {
+      const parity = chain.scoringPossessionIndex % 2 === 1 ? "odd" : "even";
+      const meaning =
+        chain.scoringPossessionIndex % 2 === 1
+          ? "the scoring team held the disc when the point started"
+          : "the scoring team did not hold the disc when the point started";
+      warnings.push({
+        code: "LINE_EVENT_DISAGREE",
+        message: `Point ${point.pointNumber} is recorded "${eventAttribution.holdOrBreak}" for ${eventAttribution.scoringTeam}, but the event chain makes the scoring possession ${chain.scoringPossessionIndex}, which is ${parity} (${meaning}). The recorded lines and the event stream disagree about who had the disc first; the line-based label stays authoritative.`,
         pointNumber: point.pointNumber,
       });
     }

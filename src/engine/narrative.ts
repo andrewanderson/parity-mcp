@@ -1,4 +1,5 @@
 import type { Event, GamePayload } from "../domain/types.js";
+import { firstPointIndex, possessionChain } from "../domain/possessionChain.js";
 import {
   buildScoreTimelineAndStoryFacts,
   type ScoreTimelineItem,
@@ -47,8 +48,10 @@ export type PointNote = {
   /** Passes in the possession that ended with the goal; 0 without a recorded POINT event. */
   scoringPossessionLength: number;
   /**
-   * Which possession in the chain scored the goal; 1 means the scoring team
-   * held from the start; 0 without a recorded POINT event.
+   * Which possession in the chain scored the goal. The chain starts with the
+   * offence-line team and alternates at every possession boundary, so an odd
+   * index means the scoring team held the disc when the point started and an
+   * even index means it did not; 0 without a recorded POINT event.
    */
   scoringPossessionIndex: number;
   /** Turnover moments in the point before the goal, counting a throwaway-then-block pair as one. */
@@ -144,14 +147,6 @@ function isTurnoverEvent(event: Event): boolean {
   );
 }
 
-/** Index of the first recorded POINT event; events.length when none exists. */
-function firstPointIndex(events: readonly Event[]): number {
-  for (let i = 0; i < events.length; i += 1) {
-    if (events[i]!.type === "POINT") return i;
-  }
-  return events.length;
-}
-
 /**
  * The final THROWAWAY/DROP/DEFENSE event before the POINT event. The first
  * recorded POINT bounds the walk: anything after it belongs to the recording
@@ -173,56 +168,6 @@ function passesAfter(event: Event, events: readonly Event[]): number {
     if (events[i]!.type === "PASS") count += 1;
   }
   return count;
-}
-
-/**
- * The point's possession chain, computed from its events alone. The offence
- * line starts with the disc and is the chain's first possession; every
- * turnover moment ends the possession and starts the next. A THROWAWAY
- * immediately followed by a DEFENSE is one moment (the throw and the block):
- * the possession changes once, to the blocking team, and the throwaway itself
- * does not change possession; a standalone THROWAWAY, a DROP, and an unpaired
- * DEFENSE each change possession once. Events past the first recorded POINT
- * belong to the recording tail and are ignored. The possession containing the
- * POINT event is the scoring possession; without a recorded POINT event the
- * chain still yields its possession and turnover counts, but no possession
- * scores (index, length, and tail passes are 0). In a rare capture row the
- * recorded lines and the event stream disagree on who opened with the disc;
- * the counts below are the event facts either way.
- */
-function possessionChain(events: readonly Event[]): {
-  possessionCount: number;
-  scoringPossessionLength: number;
-  scoringPossessionIndex: number;
-  turnoversBeforeGoal: number;
-  passesAfterLastTurnover: number;
-} {
-  const pointIndex = firstPointIndex(events);
-  let moments = 0;
-  let segmentPasses = 0;
-  for (let i = 0; i < pointIndex; i += 1) {
-    const event = events[i]!;
-    if (event.type === "PASS") {
-      segmentPasses += 1;
-    } else if (event.type === "THROWAWAY") {
-      if (events[i + 1]?.type === "DEFENSE") {
-        i += 1;
-      }
-      moments += 1;
-      segmentPasses = 0;
-    } else if (event.type === "DROP" || event.type === "DEFENSE") {
-      moments += 1;
-      segmentPasses = 0;
-    }
-  }
-  const scored = pointIndex < events.length;
-  return {
-    possessionCount: moments + 1,
-    scoringPossessionLength: scored ? segmentPasses : 0,
-    scoringPossessionIndex: scored ? moments + 1 : 0,
-    turnoversBeforeGoal: moments,
-    passesAfterLastTurnover: scored && moments > 0 ? segmentPasses : 0,
-  };
 }
 
 /**
@@ -271,7 +216,8 @@ function collectPointTerms(events: readonly Event[]): PointTerm[] {
  * Per-point notes: completions from recorded PASS events, the longest gap
  * between consecutive event timestamps, earned terms from the point's event
  * bookends (at most one term per point), and the possession-chain facts of
- * the point.
+ * the point (walked by `possessionChain`, shared with the quality stage so
+ * the narrative and the chain-parity warning never drift).
  */
 export function buildPointNotes(payload: GamePayload): PointNote[] {
   return payload.game.points.map((point) => {
