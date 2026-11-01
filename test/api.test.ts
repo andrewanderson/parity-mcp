@@ -39,7 +39,7 @@ function fixtureFetch(routes: Record<string, unknown>): {
   return { fetchLike: fetchLike as unknown as typeof fetch, calls };
 }
 
-function apiSource() {
+function apiSource(overrides: Record<string, unknown> = {}) {
   const { fetchLike, calls } = fixtureFetch({
     "/api/leagues": leaguesFixture,
     "/api/24/teams": teams24,
@@ -47,6 +47,7 @@ function apiSource() {
     "/api/24/games": games24,
     "/api/24/games?includePoints=true": games24,
     "/api/24/games/1000": game1000,
+    ...overrides,
   });
   return { source: createParityApiSource({ baseUrl: "https://parity.example", fetchLike }), calls };
 }
@@ -101,6 +102,20 @@ describe("ParityApiSource", () => {
     expect(payload.game.points.length).toBeGreaterThan(0);
     expect(payload.stats.length).toBeGreaterThan(0);
     expect(Array.isArray(payload.quality.warnings)).toBe(true);
+  });
+
+  it("getGame attaches isOpen to stat lines from the teams payload", async () => {
+    const { source, calls } = apiSource();
+    const payload = await source.getGame({ id: 24 }, "1000");
+    expect(payload.stats.some((s) => s.isOpen === true)).toBe(true);
+    expect(payload.stats.some((s) => s.isOpen === false)).toBe(true);
+    expect(calls.map((c) => c.path)).toContain("/api/24/teams");
+  });
+
+  it("getGame degrades to stat lines without isOpen when the teams endpoint fails", async () => {
+    const { source } = apiSource({ "/api/24/teams": undefined });
+    const payload = await source.getGame({ id: 24 }, "1000");
+    expect(payload.stats.every((s) => s.isOpen === undefined)).toBe(true);
   });
 
   it("listGames hits the plain games endpoint and includePoints for date filtering", async () => {

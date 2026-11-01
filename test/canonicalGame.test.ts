@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ApiGame, GamePayload, SupportedLeague } from "../src/domain/types.js";
-import { canonicalizeGame, resolvePlayerTeam, qualityReport } from "../src/data/normalize.js";
+import { buildGenderMap, canonicalizeGame, resolvePlayerTeam, qualityReport } from "../src/data/normalize.js";
 import game1002 from "./fixtures/captures/game-1002.json";
 import leaguesFixture from "./fixtures/captures/leagues.json";
 
@@ -360,6 +360,85 @@ describe("qualityReport", () => {
     const payload = payload1002();
     const sam = payload.stats.find((s) => s.name === "Sam Lanesmith");
     expect(sam?.team).toBe("Unknown");
+  });
+});
+
+describe("canonicalizeGame gender attachment", () => {
+  it("attaches isOpen to stat lines from the gender map, absent for unknown players", () => {
+    const genderMap = new Map([
+      ["quinn fielder", true],
+      ["rowan vale", false],
+    ]);
+    const payload = canonicalizeGame(
+      syntheticGame({
+        stats: {
+          "Quinn Fielder": emptyStat(),
+          "Rowan Vale(S)": emptyStat(),
+          "Mystery Player": emptyStat(),
+        } as ApiGame["stats"],
+      }),
+      league,
+      genderMap,
+    );
+    expect(payload.stats.find((s) => s.name === "Quinn Fielder")?.isOpen).toBe(true);
+    // Substitute marker on the stats key still matches the stripped map key.
+    expect(payload.stats.find((s) => s.name === "Rowan Vale")?.isOpen).toBe(false);
+    expect(payload.stats.find((s) => s.name === "Mystery Player")?.isOpen).toBeUndefined();
+  });
+
+  it("omits isOpen entirely when no gender map is provided", () => {
+    const payload = canonicalizeGame(syntheticGame(), league);
+    expect(payload.stats.every((s) => s.isOpen === undefined)).toBe(true);
+  });
+});
+
+describe("buildGenderMap", () => {
+  const rawTeams = [
+    {
+      id: 1,
+      name: "Team A (Alice)",
+      players: [
+        { name: "Quinn Fielder", is_open: true, team: "Team A (Alice)" },
+        { name: "Rowan Vale(S)", is_open: false, team: "Team A (Alice)" },
+      ],
+    },
+    {
+      id: 2,
+      name: "Team B (Bob)",
+      players: [{ name: "Casey Brook", is_open: false, team: "Team B (Bob)" }],
+    },
+    { garbage: true },
+    {
+      id: 3,
+      name: "Team C",
+      players: [{ name: "Broken Player", is_open: "yes" }],
+    },
+    {
+      id: 4,
+      name: "Team D",
+      players: [{ name: "Quinn Fielder", is_open: false, team: "Team D (Dee)" }],
+    },
+  ];
+
+  it("keys stripped lower-case names and maps is_open", () => {
+    const map = buildGenderMap(rawTeams);
+    expect(map.get("rowan vale")).toBe(false);
+    expect(map.get("casey brook")).toBe(false);
+  });
+
+  it("drops a single player claimed with conflicting divisions", () => {
+    const map = buildGenderMap(rawTeams);
+    expect(map.get("quinn fielder")).toBeUndefined();
+  });
+
+  it("ignores malformed teams and players", () => {
+    const map = buildGenderMap(rawTeams);
+    expect(map.has("broken player")).toBe(false);
+  });
+
+  it("returns an empty map for a null or non-array payload", () => {
+    expect(buildGenderMap(null).size).toBe(0);
+    expect(buildGenderMap({}).size).toBe(0);
   });
 });
 
