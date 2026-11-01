@@ -312,17 +312,93 @@ function buildStretches(
 }
 
 /**
+ * Longest contiguous streak of HOLD points scored by `team`, contiguity as in
+ * `scoringRuns`: consecutive timeline items with point numbers stepping by
+ * exactly 1, so any gap (including an unattributed point or a BREAK) breaks
+ * the streak. Returns null when the longest streak is under 2 points.
+ */
+function longestHoldStreak(
+  timeline: readonly ScoreTimelineItem[],
+  team: string,
+): { length: number; start: number; end: number } | null {
+  let best: { length: number; start: number; end: number } | null = null;
+  let current: { length: number; start: number; end: number } | null = null;
+  let previousPointNumber = -1;
+  for (const item of timeline) {
+    if (item.scoringTeam === team && item.holdOrBreak === "HOLD") {
+      current =
+        current !== null && item.pointNumber === previousPointNumber + 1
+          ? {
+              length: current.length + 1,
+              start: current.start,
+              end: item.pointNumber,
+            }
+          : { length: 1, start: item.pointNumber, end: item.pointNumber };
+      if (best === null || current.length > best.length) best = current;
+    } else {
+      current = null;
+    }
+    previousPointNumber = item.pointNumber;
+  }
+  return best !== null && best.length >= 2 ? best : null;
+}
+
+/**
+ * Per-roster-team conversion stats, over the timeline's attributed points
+ * only (`scoringTeam` non-null; an attributed point with unresolvable lines
+ * has a null holdOrBreak and counts as neither chance nor conversion). A
+ * break chance is a point the team started on defence and did not win by
+ * breaking: a HOLD scored by the other team, or a BREAK scored by this team.
+ * A break conversion is a BREAK scored by this team. `survivedHalfBoundary`
+ * is false without a streak or without a valid two-PULL half boundary.
+ */
+function buildConversions(
+  payload: GamePayload,
+  timeline: readonly ScoreTimelineItem[],
+  secondHalfStartPoint: number | null,
+): ConversionStats[] {
+  return [payload.game.homeTeam, payload.game.awayTeam].map((team) => {
+    let breakChances = 0;
+    let breakConversions = 0;
+    for (const item of timeline) {
+      if (item.scoringTeam === null) continue;
+      if (item.holdOrBreak === "BREAK") {
+        if (item.scoringTeam === team) {
+          breakChances += 1;
+          breakConversions += 1;
+        }
+      } else if (item.holdOrBreak === "HOLD" && item.scoringTeam !== team) {
+        breakChances += 1;
+      }
+    }
+    const streak = longestHoldStreak(timeline, team);
+    return {
+      team,
+      breakChances,
+      breakConversions,
+      longestHoldStreak: streak,
+      survivedHalfBoundary:
+        streak !== null &&
+        secondHalfStartPoint !== null &&
+        streak.start < secondHalfStartPoint &&
+        secondHalfStartPoint <= streak.end,
+    };
+  });
+}
+
+/**
  * Derive the narrative payload from a canonical game payload. Deterministic
  * and pure: nothing is invented, and unattributable data yields nulls or
  * empty lists. Stretches are classified from the timeline's scoring runs;
- * conversions are filled by a later task.
+ * conversions track break chances, break conversions, and hold streaks.
  */
 export function buildNarrative(payload: GamePayload): NarrativePayload {
   const { timeline, storyFacts } = buildScoreTimelineAndStoryFacts(payload);
+  const secondHalfStartPoint = buildHalfBoundary(payload);
   return {
-    secondHalfStartPoint: buildHalfBoundary(payload),
+    secondHalfStartPoint,
     stretches: buildStretches(timeline, storyFacts.scoringRuns),
-    conversions: [],
+    conversions: buildConversions(payload, timeline, secondHalfStartPoint),
     pointNotes: buildPointNotes(payload),
   };
 }

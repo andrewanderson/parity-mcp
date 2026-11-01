@@ -117,7 +117,22 @@ describe("buildNarrative half boundary", () => {
       { pointNumber: 2, completions: 0, longestGapSec: null, terms: [] },
     ]);
     expect(narrative.stretches).toEqual([]);
-    expect(narrative.conversions).toEqual([]);
+    expect(narrative.conversions).toEqual([
+      {
+        team: "Team A (Alice)",
+        breakChances: 0,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+      {
+        team: "Team B (Bob)",
+        breakChances: 0,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+    ]);
     expect(narrative.secondHalfStartPoint).toBe(null);
   });
 });
@@ -472,6 +487,145 @@ describe("buildNarrative stretches", () => {
         endPointNumber: 3,
         team: payload.game.awayTeam,
         scorers: [{ name: "Away Bea", goals: 1 }],
+      },
+    ]);
+  });
+});
+
+/** A scored point that also opens with a PULL event (for half boundaries). */
+function scoredPointWithPull(scorer: string, holds: boolean): ApiPoint {
+  const base = scoredPoint(scorer, holds);
+  return { ...base, events: [pullEvent(), ...base.events] };
+}
+
+describe("buildNarrative conversions", () => {
+  it("counts one break chance per point started on defence", () => {
+    // P1 home hold, P2 away hold, P3 away break, P4 away hold:
+    // home started on defence at P2 and P4 (chances 2, conversions 0);
+    // away started on defence at P1 and P3 (chances 2, conversions 1).
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(AWAY_BEA, false),
+      scoredPoint(AWAY_BEA, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.conversions).toEqual([
+      {
+        team: payload.game.homeTeam,
+        breakChances: 2,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+      {
+        team: payload.game.awayTeam,
+        breakChances: 2,
+        breakConversions: 1,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+    ]);
+  });
+
+  it("never counts unattributed points", () => {
+    // Same breakdown as above with an unresolvable scorer inserted: the
+    // unattributed point contributes no chance and no conversion.
+    const payload = stretchPayload(
+      [
+        scoredPoint(HOME_PAT, true),
+        scoredPoint(AWAY_BEA, true),
+        unattributedPoint(),
+        scoredPoint(AWAY_BEA, false),
+        scoredPoint(AWAY_BEA, true),
+      ],
+      { "Mystery May": statLine("Unknown") },
+    );
+    const n = buildNarrative(payload);
+
+    expect(n.conversions).toEqual([
+      {
+        team: payload.game.homeTeam,
+        breakChances: 2,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+      {
+        team: payload.game.awayTeam,
+        breakChances: 2,
+        breakConversions: 1,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+    ]);
+  });
+
+  it("finds the longest hold streak and the half boundary cross", () => {
+    // Away hold P1, home holds P2-P7, away break P8; PULLs at P1 and P5 put
+    // the half boundary at P5. Home's streak spans P2-P7 (length 6) and
+    // crosses it; away's best is the single P1 hold (under 2 -> null).
+    const payload = stretchPayload([
+      scoredPointWithPull(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPointWithPull(HOME_PAT, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, false),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.secondHalfStartPoint).toBe(5);
+    expect(n.conversions).toEqual([
+      {
+        team: payload.game.homeTeam,
+        breakChances: 1,
+        breakConversions: 0,
+        longestHoldStreak: { length: 6, start: 2, end: 7 },
+        survivedHalfBoundary: true,
+      },
+      {
+        team: payload.game.awayTeam,
+        breakChances: 7,
+        breakConversions: 1,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+    ]);
+  });
+
+  it("yields no streak under 2 even with a valid half boundary", () => {
+    // Home holds only P2; the boundary at P3 never applies to a null streak.
+    const pullOnlyPoint = (side: string[]): ApiPoint => ({
+      offensePlayers: side,
+      defensePlayers: side,
+      events: [pullEvent()],
+    });
+    const payload = stretchPayload([
+      pullOnlyPoint([HOME_PAT]),
+      scoredPoint(HOME_PAT, true),
+      pullOnlyPoint([HOME_PAT]),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.secondHalfStartPoint).toBe(3);
+    expect(n.conversions).toEqual([
+      {
+        team: payload.game.homeTeam,
+        breakChances: 0,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
+      },
+      {
+        team: payload.game.awayTeam,
+        breakChances: 1,
+        breakConversions: 0,
+        longestHoldStreak: null,
+        survivedHalfBoundary: false,
       },
     ]);
   });
