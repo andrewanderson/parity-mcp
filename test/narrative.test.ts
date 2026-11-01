@@ -113,8 +113,8 @@ describe("buildNarrative half boundary", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 0, longestGapSec: null, terms: [] },
-      { pointNumber: 2, completions: 0, longestGapSec: null, terms: [] },
+      { pointNumber: 1, completions: 0, longestGapSec: null, terms: [], transitionPassCount: null },
+      { pointNumber: 2, completions: 0, longestGapSec: null, terms: [], transitionPassCount: null },
     ]);
     expect(narrative.stretches).toEqual([]);
     expect(narrative.conversions).toEqual([
@@ -144,7 +144,7 @@ describe("buildPointNotes gap detection", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 3, longestGapSec: 50, terms: [] },
+      { pointNumber: 1, completions: 3, longestGapSec: 50, terms: [], transitionPassCount: null },
     ]);
   });
 
@@ -154,7 +154,7 @@ describe("buildPointNotes gap detection", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 2, longestGapSec: null, terms: [] },
+      { pointNumber: 1, completions: 2, longestGapSec: null, terms: [], transitionPassCount: null },
     ]);
   });
 });
@@ -265,6 +265,52 @@ describe("buildPointNotes term classification", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes[0]!.terms).toEqual([]);
+  });
+
+  it("does not earn transition when the scoring possession ran four passes after the turnover", () => {
+    // DEFENSE by "Dana D", then 4 PASSes, POINT by "Score Sally": a four-pass
+    // possession is an ordinary possession, terms [] and count null.
+    const payload = canonical([[defenseEvent(DEFENCE), ...passes(4), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual([]);
+    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(null);
+  });
+
+  it("earns transition when the scoring possession ran three passes after the turnover", () => {
+    // Same shape with 3 PASSes: the quick counter still earns transition and
+    // reports the possession's pass count.
+    const payload = canonical([[defenseEvent(DEFENCE), ...passes(3), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
+    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(3);
+  });
+
+  it("earns transition with a zero-pass counter and reports the count", () => {
+    // THROWAWAY by "Thrower T", then POINT by "Score Sally": the fastest
+    // counter there is, count 0.
+    const payload = canonical([[namedEvent("THROWAWAY", "Thrower T"), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
+    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(0);
+  });
+
+  it("keeps callahan and double happiness without adding transition", () => {
+    // Own DEFENSE + 0 PASSes -> callahan, own DEFENSE + 5 PASSes ->
+    // double-happiness; neither gains transition and neither reports a count.
+    const callahan = canonical([[defenseEvent(SCORER), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(callahan);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(null);
+
+    const double = canonical([[defenseEvent(SCORER), ...passes(5), pointEvent(SCORER)]]);
+    const doubleNarrative = buildNarrative(double);
+
+    expect(doubleNarrative.pointNotes[0]!.terms).toEqual(["double-happiness"]);
+    expect(doubleNarrative.pointNotes[0]!.transitionPassCount).toBe(null);
   });
 
   it("normalizes actor names before comparing the block to the scorer", () => {

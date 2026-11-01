@@ -38,6 +38,11 @@ export type PointNote = {
   /** Longest gap between consecutive events; null when any event lacks timestampSec. */
   longestGapSec: number | null;
   terms: PointTerm[];
+  /**
+   * PASS count between the last turnover before the POINT and the POINT
+   * itself; non-null only when the point earned `transition`, null otherwise.
+   */
+  transitionPassCount: number | null;
 };
 
 /** A team's break chances, break conversions, and best hold streak in the game. */
@@ -177,41 +182,61 @@ function scorerKey(events: readonly Event[]): string | null {
 }
 
 /**
- * Earned terms for one point, from its event bookends. Every term here
- * describes a scoring possession, so a point with no recorded POINT event
- * earns nothing (empty terms, never a guess). With a POINT event, the last
- * turnover before it classifies the point, and exactly one of
- * callahan/double-happiness/transition is earned. With zero turnover events
- * and at least five completions the point is clean-possession (exclusive of
- * the other three by construction); below the floor it earns nothing.
- * A DEFENSE whose blocker cannot be attributed to the scorer (missing or
- * blank actors) is unattributable and yields empty terms, never a guess.
+ * Earned terms and transition pass count for one point, from its event
+ * bookends. Every term here describes a scoring possession, so a point with
+ * no recorded POINT event earns nothing (empty terms, never a guess). With a
+ * POINT event, the last turnover before it classifies the point, and exactly
+ * one of callahan/double-happiness/transition is earned. With zero turnover
+ * events and at least five completions the point is clean-possession
+ * (exclusive of the other three by construction); below the floor it earns
+ * nothing. A DEFENSE whose blocker cannot be attributed to the scorer
+ * (missing or blank actors) is unattributable and yields empty terms, never
+ * a guess. `transition` is bounded to quick counters: the scoring possession
+ * must have run three or fewer PASSes after the turnover, and only then is
+ * `transitionPassCount` non-null. When the scorer's own DEFENSE is the last
+ * turnover the point earns callahan or double-happiness, never transition.
  */
-function collectPointTerms(events: readonly Event[]): PointTerm[] {
+function collectPointTerms(
+  events: readonly Event[],
+): { terms: PointTerm[]; transitionPassCount: number | null } {
   const pointIndex = firstPointIndex(events);
-  if (pointIndex === events.length) return [];
+  if (pointIndex === events.length) {
+    return { terms: [], transitionPassCount: null };
+  }
 
+  const noCount = { terms: [] as PointTerm[], transitionPassCount: null };
   const turnover = lastTurnover(events);
   if (turnover === null) {
-    return countPasses(events, pointIndex) >= 5 ? ["clean-possession"] : [];
+    return {
+      terms: countPasses(events, pointIndex) >= 5 ? ["clean-possession"] : [],
+      transitionPassCount: null,
+    };
   }
 
   if (turnover.type !== "DEFENSE") {
-    return ["transition"];
+    const passes = passesAfter(turnover, events);
+    return passes <= 3 ? { terms: ["transition"], transitionPassCount: passes } : noCount;
   }
 
   const blocker = actorKey(turnover.firstActor ?? turnover.secondActor);
   const scorer = scorerKey(events);
-  if (blocker === null || scorer === null) return [];
+  if (blocker === null || scorer === null) return noCount;
 
-  if (blocker !== scorer) return ["transition"];
-  return passesAfter(turnover, events) >= 1 ? ["double-happiness"] : ["callahan"];
+  if (blocker !== scorer) {
+    const passes = passesAfter(turnover, events);
+    return passes <= 3 ? { terms: ["transition"], transitionPassCount: passes } : noCount;
+  }
+  return {
+    terms: passesAfter(turnover, events) >= 1 ? ["double-happiness"] : ["callahan"],
+    transitionPassCount: null,
+  };
 }
 
 /**
  * Per-point notes: completions from recorded PASS events, the longest gap
  * between consecutive event timestamps, and earned terms from the point's
- * event bookends (at most one term per point).
+ * event bookends (at most one term per point), with the bounded possession's
+ * pass count on transition points only.
  */
 export function buildPointNotes(payload: GamePayload): PointNote[] {
   return payload.game.points.map((point) => {
@@ -221,11 +246,13 @@ export function buildPointNotes(payload: GamePayload): PointNote[] {
         completions += 1;
       }
     }
+    const { terms, transitionPassCount } = collectPointTerms(point.events);
     return {
       pointNumber: point.pointNumber,
       completions,
       longestGapSec: longestGap(point.events),
-      terms: collectPointTerms(point.events),
+      terms,
+      transitionPassCount,
     };
   });
 }
