@@ -381,6 +381,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 1,
         endPointNumber: 4,
         team: null,
+        half: null,
         scorers: [
           { name: "Home Pat", goals: 2 },
           { name: "Away Bea", goals: 2 },
@@ -402,6 +403,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 1,
         endPointNumber: 2,
         team: null,
+        half: null,
         scorers: [
           { name: "Home Pat", goals: 1 },
           { name: "Away Bea", goals: 1 },
@@ -424,6 +426,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 1,
         endPointNumber: 3,
         team: payload.game.homeTeam,
+        half: null,
         scorers: [{ name: "Home Pat", goals: 3 }],
       },
     ]);
@@ -446,6 +449,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 1,
         endPointNumber: 2,
         team: payload.game.homeTeam,
+        half: null,
         scorers: [{ name: "Home Pat", goals: 2 }],
       },
       {
@@ -453,6 +457,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 3,
         endPointNumber: 4,
         team: null,
+        half: null,
         scorers: [
           { name: "Away Bea", goals: 1 },
           { name: "Home Pat", goals: 1 },
@@ -479,6 +484,7 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 1,
         endPointNumber: 1,
         team: payload.game.homeTeam,
+        half: null,
         scorers: [{ name: "Home Pat", goals: 1 }],
       },
       {
@@ -486,9 +492,63 @@ describe("buildNarrative stretches", () => {
         startPointNumber: 3,
         endPointNumber: 3,
         team: payload.game.awayTeam,
+        half: null,
         scorers: [{ name: "Away Bea", goals: 1 }],
       },
     ]);
+  });
+
+  it("assigns half 1 before the boundary and half 2 from the boundary onward", () => {
+    // PULLs at P1 and P3 put the boundary at P3: the home run P1-P2 is wholly
+    // in half 1, the away run P3-P4 starts at the boundary and is half 2.
+    const payload = stretchPayload([
+      scoredPointWithPull(HOME_PAT, true),
+      scoredPoint(HOME_PAT, false),
+      scoredPointWithPull(AWAY_BEA, true),
+      scoredPoint(AWAY_BEA, false),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.secondHalfStartPoint).toBe(3);
+    expect(
+      n.stretches.map((s) => [s.startPointNumber, s.endPointNumber, s.half]),
+    ).toEqual([
+      [1, 2, 1],
+      [3, 4, 2],
+    ]);
+  });
+
+  it('assigns "spans" to a stretch that straddles the half boundary', () => {
+    // One home run P1-P4 contains the boundary at P3.
+    const payload = stretchPayload([
+      scoredPointWithPull(HOME_PAT, true),
+      scoredPoint(HOME_PAT, false),
+      scoredPointWithPull(HOME_PAT, false),
+      scoredPoint(HOME_PAT, false),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.secondHalfStartPoint).toBe(3);
+    expect(n.stretches).toHaveLength(1);
+    expect(n.stretches[0]!.half).toBe("spans");
+  });
+
+  it("derives every stretch half from the boundary for fixture 1013 (null when no boundary)", () => {
+    const n = buildNarrative(payload1013());
+
+    if (n.secondHalfStartPoint === null) {
+      expect(n.stretches.every((s) => s.half === null)).toBe(true);
+    } else {
+      for (const s of n.stretches) {
+        const expected =
+          s.endPointNumber < n.secondHalfStartPoint
+            ? 1
+            : s.startPointNumber >= n.secondHalfStartPoint
+              ? 2
+              : "spans";
+        expect(s.half).toBe(expected);
+      }
+    }
   });
 });
 
@@ -523,7 +583,8 @@ describe("buildNarrative conversions", () => {
         team: payload.game.awayTeam,
         breakChances: 2,
         breakConversions: 1,
-        longestHoldStreak: null,
+        // Away's own P3 break does not interrupt the P2-P4 unbroken run.
+        longestHoldStreak: { length: 2, start: 2, end: 4 },
         survivedHalfBoundary: false,
       },
     ]);
@@ -562,19 +623,23 @@ describe("buildNarrative conversions", () => {
     ]);
   });
 
-  it("finds the longest hold streak and the half boundary cross", () => {
-    // Away hold P1, home holds P2-P7, away break P8; PULLs at P1 and P5 put
-    // the half boundary at P5. Home's streak spans P2-P7 (length 6) and
-    // crosses it; away's best is the single P1 hold (under 2 -> null).
+  it("finds the longest unbroken hold streak and the half boundary cross", () => {
+    // Alternating holds P1-P8 (away on odd points, home on even), then a home
+    // break at P9; PULLs at P1 and P5 put the half boundary at P5. Away's
+    // holds do not interrupt home's unbroken run: home's offensive points
+    // P2/P4/P6/P8 give start 2, end 8, length 4, crossing the boundary. Away
+    // holds P1/P3/P5/P7 (start 1, end 7, length 4) and also crosses it; the
+    // P9 home break comes after and does not shorten the recorded streak.
     const payload = stretchPayload([
       scoredPointWithPull(AWAY_BEA, true),
       scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
       scoredPoint(HOME_PAT, true),
+      scoredPointWithPull(AWAY_BEA, true),
       scoredPoint(HOME_PAT, true),
-      scoredPointWithPull(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
       scoredPoint(HOME_PAT, true),
-      scoredPoint(HOME_PAT, true),
-      scoredPoint(AWAY_BEA, false),
+      scoredPoint(HOME_PAT, false),
     ]);
     const n = buildNarrative(payload);
 
@@ -582,19 +647,87 @@ describe("buildNarrative conversions", () => {
     expect(n.conversions).toEqual([
       {
         team: payload.game.homeTeam,
-        breakChances: 1,
-        breakConversions: 0,
-        longestHoldStreak: { length: 6, start: 2, end: 7 },
+        breakChances: 5,
+        breakConversions: 1,
+        longestHoldStreak: { length: 4, start: 2, end: 8 },
         survivedHalfBoundary: true,
       },
       {
         team: payload.game.awayTeam,
-        breakChances: 7,
-        breakConversions: 1,
-        longestHoldStreak: null,
-        survivedHalfBoundary: false,
+        breakChances: 4,
+        breakConversions: 0,
+        longestHoldStreak: { length: 4, start: 1, end: 7 },
+        survivedHalfBoundary: true,
       },
     ]);
+  });
+
+  it("lets an opponent break reset the unbroken streak mid-run", () => {
+    // Home holds P2, away holds P3, home holds P4 (home length 2, P2-P4);
+    // away breaks P5, which breaks home, so home's P6 hold starts afresh at 1
+    // and the best stays P2-P4.
+    const payload = stretchPayload([
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, false),
+      scoredPoint(HOME_PAT, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.conversions[0]!.longestHoldStreak).toEqual({ length: 2, start: 2, end: 4 });
+  });
+
+  it("starts a fresh streak after an opponent break instead of continuing it", () => {
+    // Home holds P2, away breaks P3 (resets), home holds P4, away holds P5,
+    // home holds P6: the streak is P4-P6 (length 2), not P2-P6.
+    const payload = stretchPayload([
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, false),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.conversions[0]!.longestHoldStreak).toEqual({ length: 2, start: 4, end: 6 });
+  });
+
+  it("does not reset the streak on the team's own break", () => {
+    // Home holds P2, away holds P3, home holds P4, away holds P5, home BREAKs
+    // P6 (not an offensive point for home), home holds P7: start 2, end 7,
+    // length 3.
+    const payload = stretchPayload([
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, false),
+      scoredPoint(HOME_PAT, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.conversions[0]!.longestHoldStreak).toEqual({ length: 3, start: 2, end: 7 });
+  });
+
+  it("resets the streak on an unattributed point", () => {
+    // Home holds P2 and P4 around an unattributed P3: the run is cut, so
+    // neither side of it reaches 2.
+    const payload = stretchPayload(
+      [
+        scoredPoint(AWAY_BEA, true),
+        scoredPoint(HOME_PAT, true),
+        unattributedPoint(),
+        scoredPoint(HOME_PAT, true),
+      ],
+      { "Mystery May": statLine("Unknown") },
+    );
+    const n = buildNarrative(payload);
+
+    expect(n.conversions[0]!.longestHoldStreak).toBe(null);
   });
 
   it("yields no streak under 2 even with a valid half boundary", () => {
@@ -628,5 +761,45 @@ describe("buildNarrative conversions", () => {
         survivedHalfBoundary: false,
       },
     ]);
+  });
+});
+
+describe("buildNarrative universe point", () => {
+  it("is true when the game entered the final point tied", () => {
+    // Scores 1-0, 1-1, 2-1: the game stood 1-1 entering the final point.
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+    ]);
+
+    expect(buildNarrative(payload).universePoint).toBe(true);
+  });
+
+  it("is false when a two-point game ends tied (entered the final point at 1-0)", () => {
+    // P1 home hold (1-0), P2 away hold (1-1): the score entering P2 was 1-0.
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+    ]);
+
+    expect(buildNarrative(payload).universePoint).toBe(false);
+  });
+
+  it("is false when the game was not tied entering the final point", () => {
+    // Scores 1-0, 2-0, 2-1: entering the final point the game stood 2-0.
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, false),
+      scoredPoint(AWAY_BEA, true),
+    ]);
+
+    expect(buildNarrative(payload).universePoint).toBe(false);
+  });
+
+  it("is false with fewer than two attributed points", () => {
+    const payload = stretchPayload([scoredPoint(HOME_PAT, true)]);
+
+    expect(buildNarrative(payload).universePoint).toBe(false);
   });
 });

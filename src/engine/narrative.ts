@@ -11,13 +11,19 @@ import {
  */
 export type StretchKind = "run" | "trades" | "on-serve";
 
-/** A contiguous stretch of points with a single narrative character. */
+/** A contiguous stretch of points with a single narrative character and a half placement. */
 export type Stretch = {
   kind: StretchKind;
   startPointNumber: number;
   endPointNumber: number;
   /** Non-null for "run" stretches only. */
   team: string | null;
+  /**
+   * The half the stretch falls in, from `secondHalfStartPoint`: 1 when the
+   * whole span is strictly before the boundary, 2 when it starts at or after
+   * it, "spans" when it straddles it, and null when there is no valid boundary.
+   */
+  half: 1 | 2 | "spans" | null;
   /** Scorer tallies by raw name within the stretch span; null scorers are skipped. */
   scorers: Array<{ name: string; goals: number }>;
 };
@@ -39,7 +45,10 @@ export type ConversionStats = {
   team: string;
   breakChances: number;
   breakConversions: number;
-  /** Longest contiguous streak of HOLDs scored by this team; null when under 2. */
+  /**
+   * Longest unbroken run of this team's offensive points all ending in a HOLD
+   * (first and last held point numbers); null when under 2.
+   */
   longestHoldStreak: { length: number; start: number; end: number } | null;
   /** True when the streak starts before and ends at or after the half boundary. */
   survivedHalfBoundary: boolean;
@@ -55,6 +64,8 @@ export type NarrativePayload = {
   stretches: Stretch[];
   conversions: ConversionStats[];
   pointNotes: PointNote[];
+  /** True when the game entered the final attributed point tied. */
+  universePoint: boolean;
 };
 
 /**
@@ -251,6 +262,22 @@ function scorerTallies(
 }
 
 /**
+ * Half of a stretch span against the second-half boundary: null without a
+ * boundary, 1 when the span ends before it, 2 when it starts at or after it,
+ * and "spans" when it straddles it.
+ */
+function stretchHalf(
+  start: number,
+  end: number,
+  secondHalfStartPoint: number | null,
+): Stretch["half"] {
+  if (secondHalfStartPoint === null) return null;
+  if (end < secondHalfStartPoint) return 1;
+  if (start >= secondHalfStartPoint) return 2;
+  return "spans";
+}
+
+/**
  * Classify stretches over the timeline's scoring runs only (reused, never
  * recomputed). Greedily group consecutive runs into an alternation block
  * while every run has length 1, each run is contiguous with its neighbour,
@@ -259,10 +286,12 @@ function scorerTallies(
  * Every remaining run is its own stretch, kind "run", carrying the run's
  * team (a length-1 run is a one-point run stretch). Scorer tallies are
  * built per stretch span from the timeline slice's non-null raw scorers.
+ * Each stretch carries its half relative to the second-half boundary.
  */
 function buildStretches(
   timeline: readonly ScoreTimelineItem[],
   scoringRuns: readonly ScoringRun[],
+  secondHalfStartPoint: number | null,
 ): Stretch[] {
   const stretches: Stretch[] = [];
   let i = 0;
@@ -288,6 +317,11 @@ function buildStretches(
     const first = scoringRuns[i]!;
     const last = scoringRuns[j]!;
     const slice = spanItems(timeline, first.startPointNumber, last.endPointNumber);
+    const half = stretchHalf(
+      first.startPointNumber,
+      last.endPointNumber,
+      secondHalfStartPoint,
+    );
     if (j > i) {
       const allHold = slice.every((item) => item.holdOrBreak === "HOLD");
       stretches.push({
@@ -295,6 +329,7 @@ function buildStretches(
         startPointNumber: first.startPointNumber,
         endPointNumber: last.endPointNumber,
         team: null,
+        half,
         scorers: scorerTallies(slice),
       });
     } else {
@@ -303,6 +338,7 @@ function buildStretches(
         startPointNumber: first.startPointNumber,
         endPointNumber: last.endPointNumber,
         team: first.team,
+        half,
         scorers: scorerTallies(slice),
       });
     }
@@ -312,37 +348,37 @@ function buildStretches(
 }
 
 /**
- * Longest contiguous streak of HOLD points scored by `team`, contiguity as in
- * `scoringRuns`: consecutive timeline items with point numbers stepping by
- * exactly 1, so any gap (including an unattributed point or a BREAK) breaks
- * the streak. Returns null when the longest streak is under 2 points.
+ * Longest unbroken run for `team` over the timeline's attributed points. A
+ * team is unbroken while every point it was on offence for ended in its own
+ * HOLD: its HOLD grows the streak, the opponent's BREAK resets it, and an
+ * unattributed point (null scoringTeam or holdOrBreak) resets it too. The
+ * opponent's HOLDs and the team's own BREAKs are not offensive points for
+ * the team and neither grow nor reset the streak. `start` and `end` are the
+ * first and last held point numbers of the streak. Returns null when the
+ * longest streak is under 2 holds.
  */
 function longestHoldStreak(
   timeline: readonly ScoreTimelineItem[],
   team: string,
 ): { length: number; start: number; end: number } | null {
   let best: { length: number; start: number; end: number } | null = null;
-  let current: { length: number; start: number; end: number } | null = null;
-  let previousPointNumber = -1;
+  let length = 0;
+  let start = 0;
   for (const item of timeline) {
-    if (item.scoringTeam === team && item.holdOrBreak === "HOLD") {
-      current =
-        current !== null && item.pointNumber === previousPointNumber + 1
-          ? {
-              length: current.length + 1,
-              start: current.start,
-              end: item.pointNumber,
-            }
-          : { length: 1, start: item.pointNumber, end: item.pointNumber };
-      if (best === null || current.length > best.length) best = current;
-    } else {
-      current = null;
+    if (item.scoringTeam === null || item.holdOrBreak === null) {
+      length = 0;
+    } else if (item.scoringTeam === team && item.holdOrBreak === "HOLD") {
+      if (length === 0) start = item.pointNumber;
+      length += 1;
+      if (best === null || length > best.length) {
+        best = { length, start, end: item.pointNumber };
+      }
+    } else if (item.scoringTeam !== team && item.holdOrBreak === "BREAK") {
+      length = 0;
     }
-    previousPointNumber = item.pointNumber;
   }
   return best !== null && best.length >= 2 ? best : null;
 }
-
 /**
  * Per-roster-team conversion stats, over the timeline's attributed points
  * only (`scoringTeam` non-null; an attributed point with unresolvable lines
@@ -387,6 +423,18 @@ function buildConversions(
 }
 
 /**
+ * Whether the game entered its final attributed point tied: the timeline item
+ * before the last attributed item shows equal home and away scores. Fewer
+ * than two attributed points yield false.
+ */
+function buildUniversePoint(timeline: readonly ScoreTimelineItem[]): boolean {
+  const attributed = timeline.filter((item) => item.scoringTeam !== null);
+  if (attributed.length < 2) return false;
+  const entering = attributed[attributed.length - 2]!;
+  return entering.homeScore === entering.awayScore;
+}
+
+/**
  * Derive the narrative payload from a canonical game payload. Deterministic
  * and pure: nothing is invented, and unattributable data yields nulls or
  * empty lists. Stretches are classified from the timeline's scoring runs;
@@ -397,8 +445,9 @@ export function buildNarrative(payload: GamePayload): NarrativePayload {
   const secondHalfStartPoint = buildHalfBoundary(payload);
   return {
     secondHalfStartPoint,
-    stretches: buildStretches(timeline, storyFacts.scoringRuns),
+    stretches: buildStretches(timeline, storyFacts.scoringRuns, secondHalfStartPoint),
     conversions: buildConversions(payload, timeline, secondHalfStartPoint),
     pointNotes: buildPointNotes(payload),
+    universePoint: buildUniversePoint(timeline),
   };
 }
