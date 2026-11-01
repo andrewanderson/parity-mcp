@@ -47,6 +47,31 @@ function canonical(pointEvents: ApiEvent[][]): GamePayload {
   return canonicalizeGame(makeGame(pointEvents), league24);
 }
 
+/** A PASS event recorded `sec` seconds after 3/14/2026, 6:00:00 PM. */
+function passEvent(sec: number): ApiEvent {
+  const date = new Date(2026, 2, 14, 18, 0, sec);
+  const hour = date.getHours();
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  const period = hour < 12 ? "AM" : "PM";
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return {
+    type: "PASS",
+    firstActor: null,
+    secondActor: null,
+    timestamp: `3/14/2026, ${hour12}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${period}`,
+  };
+}
+
+/** A PASS event whose timestamp cannot be parsed (timestampSec null). */
+function unparseablePassEvent(): ApiEvent {
+  return {
+    type: "PASS",
+    firstActor: null,
+    secondActor: null,
+    timestamp: "sometime in the first half",
+  };
+}
+
 describe("buildNarrative half boundary", () => {
   it("derives the half boundary from exactly two PULL events", () => {
     // Points: P1 with PULL, P2 no PULL, P3 with PULL -> the second PULL marks
@@ -84,5 +109,27 @@ describe("buildNarrative half boundary", () => {
     expect(narrative.stretches).toEqual([]);
     expect(narrative.conversions).toEqual([]);
     expect(narrative.secondHalfStartPoint).toBe(null);
+  });
+});
+
+describe("buildPointNotes gap detection", () => {
+  it("measures the longest gap between consecutive events", () => {
+    // Three PASS events at sec 0, 10, 60 -> gaps 10 and 50 -> longest 50.
+    const payload = canonical([[passEvent(0), passEvent(10), passEvent(60)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes).toEqual([
+      { pointNumber: 1, completions: 3, longestGapSec: 50, terms: [] },
+    ]);
+  });
+
+  it("yields null when any event lacks timestampSec", () => {
+    // PASS at sec 0, PASS at sec null -> the gap is unattributable.
+    const payload = canonical([[passEvent(0), unparseablePassEvent()]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes).toEqual([
+      { pointNumber: 1, completions: 2, longestGapSec: null, terms: [] },
+    ]);
   });
 });

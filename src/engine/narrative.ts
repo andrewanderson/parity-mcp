@@ -1,4 +1,4 @@
-import type { GamePayload } from "../domain/types.js";
+import type { Event, GamePayload } from "../domain/types.js";
 
 /**
  * How a stretch of consecutive points is characterized: a single team's
@@ -71,9 +71,30 @@ export function buildHalfBoundary(payload: GamePayload): number | null {
 }
 
 /**
- * Per-point notes: completions from recorded PASS events. Every point gets a
- * note, including points with no events. The timestamp-derived and
- * term-derived fields are filled by later tasks and stay null/empty here.
+ * Longest gap between consecutive event timestamps, in seconds. Single pass
+ * over consecutive pairs: null propagates when any timestampSec is missing,
+ * and fewer than two events yield null. Pure; never mutates the input.
+ */
+function longestGap(events: readonly Event[]): number | null {
+  if (events.length < 2) return null;
+  let longest: number | null = null;
+  let previous: number | null = null;
+  for (const event of events) {
+    if (event.timestampSec === null) return null;
+    if (previous !== null) {
+      const gap = event.timestampSec - previous;
+      if (longest === null || gap > longest) longest = gap;
+    }
+    previous = event.timestampSec;
+  }
+  return longest;
+}
+
+/**
+ * Per-point notes: completions from recorded PASS events and the longest gap
+ * between consecutive event timestamps. Every point gets a note, including
+ * points with no events. Term-derived fields are filled by later tasks and
+ * stay empty here.
  */
 export function buildPointNotes(payload: GamePayload): PointNote[] {
   return payload.game.points.map((point) => {
@@ -86,7 +107,7 @@ export function buildPointNotes(payload: GamePayload): PointNote[] {
     return {
       pointNumber: point.pointNumber,
       completions,
-      longestGapSec: null,
+      longestGapSec: longestGap(point.events),
       terms: [],
     };
   });
