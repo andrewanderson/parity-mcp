@@ -15,6 +15,10 @@ import {
   type ScoreTimelineItem,
 } from "./engine/timeline.js";
 import {
+  buildNarrative,
+  type NarrativePayload,
+} from "./engine/narrative.js";
+import {
   buildInteractions,
   type InteractionsPayload,
 } from "./engine/interactions.js";
@@ -40,6 +44,7 @@ export type FullGamePayload = GamePayload & {
   salaryLedger: SalaryLedger;
   timeline: ScoreTimelineItem[];
   storyFacts: GameStoryFacts;
+  narrative: NarrativePayload;
   interactions: InteractionsPayload;
 };
 
@@ -49,17 +54,20 @@ export type { InteractionsPayload };
 /**
  * Assemble the full canonical game payload by running every derived stage on
  * one canonical payload. Pure: the input payload is never mutated. The derived
- * stages run in dependency order: salary first, interactions need the ledger.
+ * stages run in dependency order: salary first, interactions need the ledger;
+ * narrative is independent and runs after the story facts.
  */
 export function assembleFullGame(payload: GamePayload): FullGamePayload {
   const salaryLedger = buildSalaryLedger(payload);
   const { timeline, storyFacts } = buildScoreTimelineAndStoryFacts(payload);
+  const narrative = buildNarrative(payload);
   const interactions = buildInteractions(payload, salaryLedger);
   return {
     ...payload,
     salaryLedger,
     timeline,
     storyFacts,
+    narrative,
     interactions,
   };
 }
@@ -256,7 +264,7 @@ export function createParityServer(options: ParityServerOptions): McpServer {
     "parity_get_game",
     {
       description:
-        "Get one canonical game payload with salary ledger, score timeline, story facts, interactions, and quality warnings; persists the game automatically.",
+        "Get one canonical game payload with salary ledger, score timeline, story facts, narrative shape, and interactions; persists the game automatically.",
       inputSchema: {
         league: z.union([z.number().int(), z.string()]).optional(),
         gameId: z.union([z.number().int(), z.string()]),

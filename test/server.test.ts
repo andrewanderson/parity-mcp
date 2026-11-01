@@ -299,6 +299,7 @@ describe("parity MCP server tool wiring", () => {
     expect(data.salaryLedger).toBeDefined();
     expect(Array.isArray(data.timeline)).toBe(true);
     expect(data.storyFacts).toBeDefined();
+    expect(data.narrative).toBeDefined();
     expect(Array.isArray(data.interactions.teammatePairs)).toBe(true);
     expect(Array.isArray(data.interactions.opponentPairs)).toBe(true);
     expect(Array.isArray(data.quality.warnings)).toBe(true);
