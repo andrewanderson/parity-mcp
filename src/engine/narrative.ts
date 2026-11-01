@@ -161,8 +161,10 @@ function scorerKey(events: readonly Event[]): string | null {
 }
 
 /**
- * Earned terms for one point, from its event bookends. Precedence: the last
- * turnover before the POINT classifies the point, and exactly one of
+ * Earned terms for one point, from its event bookends. Every term here
+ * describes a scoring possession, so a point with no recorded POINT event
+ * earns nothing (empty terms, never a guess). With a POINT event, the last
+ * turnover before it classifies the point, and exactly one of
  * callahan/double-happiness/transition is earned. With zero turnover events
  * and at least five completions the point is clean-possession (exclusive of
  * the other three by construction); below the floor it earns nothing.
@@ -170,9 +172,12 @@ function scorerKey(events: readonly Event[]): string | null {
  * blank actors) is unattributable and yields empty terms, never a guess.
  */
 function collectPointTerms(events: readonly Event[]): PointTerm[] {
+  const pointIndex = firstPointIndex(events);
+  if (pointIndex === events.length) return [];
+
   const turnover = lastTurnover(events);
   if (turnover === null) {
-    return countPasses(events, firstPointIndex(events)) >= 5 ? ["clean-possession"] : [];
+    return countPasses(events, pointIndex) >= 5 ? ["clean-possession"] : [];
   }
 
   if (turnover.type !== "DEFENSE") {

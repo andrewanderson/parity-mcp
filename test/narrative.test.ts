@@ -205,6 +205,20 @@ describe("buildPointNotes term classification", () => {
     expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
   });
 
+  it("awards no term to a recorded point without a POINT event (DROP chain)", () => {
+    const payload = canonical([[...passes(1), namedEvent("DROP", SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual([]);
+  });
+
+  it("awards no term to a recorded point without a POINT event (passes only)", () => {
+    const payload = canonical([[...passes(5)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual([]);
+  });
+
   it("normalizes actor names before comparing the block to the scorer", () => {
     const payload = canonical([[defenseEvent("score sally "), pointEvent(SCORER)]]);
     const narrative = buildNarrative(payload);
