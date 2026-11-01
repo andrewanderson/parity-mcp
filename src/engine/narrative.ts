@@ -1,4 +1,5 @@
-import type { Event, GamePayload } from "../domain/types.js";
+import type { Event, GamePayload, Point } from "../domain/types.js";
+import { resolvePlayerTeam } from "../data/normalize.js";
 import { firstPointIndex, possessionChain } from "../domain/possessionChain.js";
 import {
   buildScoreTimelineAndStoryFacts,
@@ -20,9 +21,10 @@ export type Stretch = {
   /** Non-null for "run" stretches only. */
   team: string | null;
   /**
-   * The half the stretch falls in, from `secondHalfStartPoint`: 1 when the
-   * whole span is strictly before the boundary, 2 when it starts at or after
-   * it, "spans" when it straddles it, and null when there is no valid boundary.
+   * The half the stretch falls in, from the second-half boundary in `halves`
+   * (`halves?.secondHalfStartPoint`): 1 when the whole span is strictly
+   * before the boundary, 2 when it starts at or after it, "spans" when it
+   * straddles it, and null when there is no valid boundary.
    */
   half: 1 | 2 | "spans" | null;
   /** Scorer tallies by raw name within the stretch span; null scorers are skipped. */
@@ -36,7 +38,11 @@ export type PointTerm = "callahan" | "double-happiness";
 export type PointNote = {
   pointNumber: number;
   completions: number;
-  /** Longest gap between consecutive events; null when any event lacks timestampSec. */
+  /**
+   * Longest gap between consecutive non-PULL events; null when any such
+   * event lacks timestampSec. The pull is the start of the point, not a
+   * stoppage, so its flight time is never counted as an interruption.
+   */
   longestGapSec: number | null;
   terms: PointTerm[];
   /**
@@ -64,6 +70,26 @@ export type PointNote = {
   passesAfterLastTurnover: number;
 };
 
+/**
+ * Half facts for a game whose captures show exactly two PULL events. Each
+ * team pulls exactly once per game and the pulling team is always the
+ * defence for the point it pulls, so the second-half pull is by the team
+ * that received the opening pull and the two pulls alternate teams: each
+ * pull's receiver is the team on the offence line of its pull's point,
+ * resolved with the shared player-reference normalisation. `null` when the
+ * game does not show exactly two PULL events or when either pull's point has
+ * no resolvable offence line: the receiver would be a guess, and a guessed
+ * receiver would let the writer state a false half transition.
+ */
+export type Halves = {
+  /** Point number where the second half starts (the point containing the second PULL). */
+  secondHalfStartPoint: number;
+  /** The team that started the second half on the disc (the second pull's receiver). */
+  secondHalfReceiver: string;
+  /** The team that started the first half on the disc (the first pull's receiver). */
+  firstHalfReceiver: string;
+} | null;
+
 /** A team's break chances, break conversions, and best hold streak in the game. */
 export type ConversionStats = {
   team: string;
@@ -84,7 +110,11 @@ export type ConversionStats = {
  * never guesses.
  */
 export type NarrativePayload = {
-  secondHalfStartPoint: number | null;
+  /**
+   * Where the second half starts and which team received each half's opening
+   * pull; null without exactly two PULL events (see `Halves`).
+   */
+  halves: Halves;
   stretches: Stretch[];
   conversions: ConversionStats[];
   pointNotes: PointNote[];
@@ -93,33 +123,80 @@ export type NarrativePayload = {
 };
 
 /**
- * The point number where the second half starts, derived from the recorded
- * PULL events. Exactly two PULLs yield the second one's point number; any
- * other count (missing or duplicated pulls) is unattributable and yields null.
+ * The game's PULL events, in point order, as the points that carry them.
+ * Multiple PULL events inside one point each count.
  */
-export function buildHalfBoundary(payload: GamePayload): number | null {
-  const pullPoints: number[] = [];
+function pullPoints(payload: GamePayload): Point[] {
+  const pulls: Point[] = [];
   for (const point of payload.game.points) {
     for (const event of point.events) {
       if (event.type === "PULL") {
-        pullPoints.push(point.pointNumber);
+        pulls.push(point);
       }
     }
   }
-  if (pullPoints.length !== 2) return null;
-  return pullPoints[1] ?? null;
+  return pulls;
 }
 
 /**
- * Longest gap between consecutive event timestamps, in seconds. Single pass
- * over consecutive pairs: null propagates when any timestampSec is missing,
- * and fewer than two events yield null. Pure; never mutates the input.
+ * The offence-line team of one recorded point: the single team every recorded
+ * offence-line player resolves to, via the module's player-reference
+ * normalisation (`resolvePlayerTeam`, which handles the terminal "(S)"
+ * substitute marker and falls back to the recorded lines' unanimity for a
+ * name the roster does not resolve). An empty, mixed, or unresolved line
+ * yields null.
+ */
+function offenceLineTeam(point: Point, payload: GamePayload): string | null {
+  let team: string | null = null;
+  for (const player of point.offensePlayers) {
+    const resolved = resolvePlayerTeam(player.raw, payload).team;
+    if (resolved === null) return null;
+    if (team === null) {
+      team = resolved;
+    } else if (resolved !== team) {
+      return null;
+    }
+  }
+  return team;
+}
+
+/**
+ * Half facts from the recorded PULL events. Each team pulls exactly once per
+ * game, so exactly two PULL events are required: the second pull's point
+ * number is the boundary, and each pull's receiver is the offence-line team
+ * of its pull's point (the puller is the defence of its point, so the two
+ * pulls alternate teams and the receivers differ). Any other pull count or
+ * an unresolved offence line yields null.
+ */
+export function buildHalves(payload: GamePayload): Halves {
+  const pulls = pullPoints(payload);
+  if (pulls.length !== 2) return null;
+  const first = pulls[0]!;
+  const second = pulls[1]!;
+  const firstHalfReceiver = offenceLineTeam(first, payload);
+  const secondHalfReceiver = offenceLineTeam(second, payload);
+  if (firstHalfReceiver === null || secondHalfReceiver === null) return null;
+  return {
+    secondHalfStartPoint: second.pointNumber,
+    secondHalfReceiver,
+    firstHalfReceiver,
+  };
+}
+
+/**
+ * Longest gap between consecutive non-PULL event timestamps, in seconds. The
+ * PULL is the start of the point, not a stoppage: its flight time is not
+ * play time, so pull events are excised before the pass over consecutive
+ * pairs. Null propagates when any non-PULL event lacks timestampSec, and
+ * fewer than two non-PULL events yield null (a pull-only point is all flight
+ * time). Pure; never mutates the input.
  */
 function longestGap(events: readonly Event[]): number | null {
-  if (events.length < 2) return null;
+  const playable = events.filter((event) => event.type !== "PULL");
+  if (playable.length < 2) return null;
   let longest: number | null = null;
   let previous: number | null = null;
-  for (const event of events) {
+  for (const event of playable) {
     if (event.timestampSec === null) return null;
     if (previous !== null) {
       const gap = event.timestampSec - previous;
@@ -214,8 +291,9 @@ function collectPointTerms(events: readonly Event[]): PointTerm[] {
 
 /**
  * Per-point notes: completions from recorded PASS events, the longest gap
- * between consecutive event timestamps, earned terms from the point's event
- * bookends (at most one term per point), and the possession-chain facts of
+ * between consecutive non-PULL event timestamps (the pull's flight time is
+ * not play time), earned terms from the point's event bookends (at most one
+ * term per point), and the possession-chain facts of
  * the point (walked by `possessionChain`, shared with the quality stage so
  * the narrative and the chain-parity warning never drift).
  */
@@ -298,8 +376,9 @@ function stretchHalf(
 function buildStretches(
   timeline: readonly ScoreTimelineItem[],
   scoringRuns: readonly ScoringRun[],
-  secondHalfStartPoint: number | null,
+  halves: Halves,
 ): Stretch[] {
+  const secondHalfStartPoint = halves?.secondHalfStartPoint ?? null;
   const stretches: Stretch[] = [];
   let i = 0;
   while (i < scoringRuns.length) {
@@ -393,13 +472,14 @@ function longestHoldStreak(
  * break chance is a point the team started on defence and did not win by
  * breaking: a HOLD scored by the other team, or a BREAK scored by this team.
  * A break conversion is a BREAK scored by this team. `survivedHalfBoundary`
- * is false without a streak or without a valid two-PULL half boundary.
+ * is false without a streak or without `halves`.
  */
 function buildConversions(
   payload: GamePayload,
   timeline: readonly ScoreTimelineItem[],
-  secondHalfStartPoint: number | null,
+  halves: Halves,
 ): ConversionStats[] {
+  const secondHalfStartPoint = halves?.secondHalfStartPoint ?? null;
   return [payload.game.homeTeam, payload.game.awayTeam].map((team) => {
     let breakChances = 0;
     let breakConversions = 0;
@@ -449,11 +529,11 @@ function buildUniversePoint(timeline: readonly ScoreTimelineItem[]): boolean {
  */
 export function buildNarrative(payload: GamePayload): NarrativePayload {
   const { timeline, storyFacts } = buildScoreTimelineAndStoryFacts(payload);
-  const secondHalfStartPoint = buildHalfBoundary(payload);
+  const halves = buildHalves(payload);
   return {
-    secondHalfStartPoint,
-    stretches: buildStretches(timeline, storyFacts.scoringRuns, secondHalfStartPoint),
-    conversions: buildConversions(payload, timeline, secondHalfStartPoint),
+    halves,
+    stretches: buildStretches(timeline, storyFacts.scoringRuns, halves),
+    conversions: buildConversions(payload, timeline, halves),
     pointNotes: buildPointNotes(payload),
     universePoint: buildUniversePoint(timeline),
   };

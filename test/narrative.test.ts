@@ -85,13 +85,17 @@ function unparseablePassEvent(): ApiEvent {
 describe("buildNarrative half boundary", () => {
   it("derives the half boundary from exactly two PULL events", () => {
     // Points: P1 with PULL, P2 no PULL, P3 with PULL -> the second PULL marks
-    // the start of the second half at point 3.
-    const payload = canonical([[], [], []].map((events, index) =>
-      index === 0 || index === 2 ? [pullEvent()] : events,
-    ));
+    // the start of the second half at point 3. Both pulls' offence lines are
+    // home (the away pull received by home, then the home pull), so the
+    // receivers resolve and agree.
+    const payload = stretchPayload([
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      scoredPoint(HOME_PAT, true),
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+    ]);
     const narrative = buildNarrative(payload);
 
-    expect(narrative.secondHalfStartPoint).toBe(3);
+    expect(narrative.halves?.secondHalfStartPoint).toBe(3);
   });
 
   it("yields null for 0, 1, or 3 PULL events", () => {
@@ -104,7 +108,7 @@ describe("buildNarrative half boundary", () => {
       const payload = canonical(pointEvents);
       const narrative = buildNarrative(payload);
 
-      expect(narrative.secondHalfStartPoint).toBe(null);
+      expect(narrative.halves).toBe(null);
     }
   });
 
@@ -153,11 +157,31 @@ describe("buildNarrative half boundary", () => {
         survivedHalfBoundary: false,
       },
     ]);
-    expect(narrative.secondHalfStartPoint).toBe(null);
+    expect(narrative.halves).toBe(null);
   });
 });
 
 describe("buildPointNotes gap detection", () => {
+  it("excludes the pull from the interruption gap", () => {
+    // PULL at 0, PASS at 40, PASS at 45, POINT at 46: the pull starts the
+    // point, it is not a stoppage, so its 40-second flight time is not play
+    // time and the longest gap is the 5 seconds between the two passes.
+    const payload = canonical([
+      [pullEvent(), passEvent(40), passEvent(45), pointEventAt(46, SCORER)],
+    ]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.longestGapSec).toBe(5);
+  });
+
+  it("yields null gap for a point whose only events are pulls", () => {
+    // A pull-only point has no play at all: nothing to measure between.
+    const payload = canonical([[pullEvent()]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.longestGapSec).toBe(null);
+  });
+
   it("measures the longest gap between consecutive events", () => {
     // Three PASS events at sec 0, 10, 60 -> gaps 10 and 50 -> longest 50.
     const payload = canonical([[passEvent(0), passEvent(10), passEvent(60)]]);
@@ -239,6 +263,11 @@ function namedEvent(type: string, actor: string): ApiEvent {
     secondActor: null,
     timestamp: "3/14/2026, 6:00:00 PM",
   };
+}
+
+/** A POINT scored by `actor` `sec` seconds after the shared 6:00 PM base. */
+function pointEventAt(sec: number, actor: string): ApiEvent {
+  return { ...passEvent(sec), type: "POINT", firstActor: actor };
 }
 
 /** A DEFENSE block credited to `actor`. */
@@ -584,6 +613,59 @@ function payload1013(): GamePayload {
   return canonicalizeGame(game1013 as unknown as ApiGame, league24);
 }
 
+/** A lined point that opens with a PULL (the defence pulls, the offence receives). */
+function pullReceivingPoint(offense: string[], defense: string[], events: ApiEvent[]): ApiPoint {
+  return linedPoint(offense, defense, [pullEvent(), ...events]);
+}
+
+describe("buildNarrative halves", () => {
+  it("reports the half receivers from the two pulls", () => {
+    // P1: the away pull, received by home (home on the offence line); P3:
+    // the home pull, received by away. Each pull's receiver is the team on
+    // the offence line of its point, the puller is the defence of its point,
+    // and the boundary is the second pull's point number.
+    const payload = stretchPayload([
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      scoredPoint(AWAY_BEA, false),
+      pullReceivingPoint([AWAY_BEA], [HOME_PAT], [pointEvent(AWAY_BEA)]),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.halves).toEqual({
+      secondHalfStartPoint: 3,
+      firstHalfReceiver: payload.game.homeTeam,
+      secondHalfReceiver: payload.game.awayTeam,
+    });
+  });
+
+  it("yields null halves when the game does not show exactly two pulls", () => {
+    const onePull = stretchPayload([
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      scoredPoint(HOME_PAT, false),
+    ]);
+    const threePulls = stretchPayload([
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+    ]);
+
+    expect(buildNarrative(onePull).halves).toBe(null);
+    expect(buildNarrative(threePulls).halves).toBe(null);
+  });
+
+  it("yields null halves when a pull's offence line resolves to no team", () => {
+    // The first pull's offence line is a name neither roster nor stats nor
+    // any line-majority resolves; the receiver would be a guess.
+    const payload = stretchPayload([
+      pullReceivingPoint(["Mystery May"], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+      scoredPoint(HOME_PAT, false),
+      pullReceivingPoint([HOME_PAT], [AWAY_BEA], [pointEvent(HOME_PAT)]),
+    ]);
+
+    expect(buildNarrative(payload).halves).toBe(null);
+  });
+});
+
 /** Expanded point-number span of a stretch, inclusive. */
 function spanPoints(stretch: { startPointNumber: number; endPointNumber: number }): number[] {
   const points: number[] = [];
@@ -762,17 +844,19 @@ describe("buildNarrative stretches", () => {
   });
 
   it("assigns half 1 before the boundary and half 2 from the boundary onward", () => {
-    // PULLs at P1 and P3 put the boundary at P3: the home run P1-P2 is wholly
-    // in half 1, the away run P3-P4 starts at the boundary and is half 2.
+    // PULLs at P1 and P3 put the boundary at P3; the home run P1-P2 is wholly
+    // in half 1, the away run P3-P4 starts at the boundary and is half 2. The
+    // offence line at both pull points is home (home received each pull, even
+    // the away break at P3), so the receivers resolve and agree.
     const payload = stretchPayload([
       scoredPointWithPull(HOME_PAT, true),
       scoredPoint(HOME_PAT, false),
-      scoredPointWithPull(AWAY_BEA, true),
-      scoredPoint(AWAY_BEA, false),
+      scoredPointWithPull(AWAY_BEA, false),
+      scoredPoint(AWAY_BEA, true),
     ]);
     const n = buildNarrative(payload);
 
-    expect(n.secondHalfStartPoint).toBe(3);
+    expect(n.halves?.secondHalfStartPoint).toBe(3);
     expect(
       n.stretches.map((s) => [s.startPointNumber, s.endPointNumber, s.half]),
     ).toEqual([
@@ -782,16 +866,17 @@ describe("buildNarrative stretches", () => {
   });
 
   it('assigns "spans" to a stretch that straddles the half boundary', () => {
-    // One home run P1-P4 contains the boundary at P3.
+    // One home run P1-P4 contains the boundary at P3; both pulls are received
+    // by home (home on the offence line at both pull points).
     const payload = stretchPayload([
       scoredPointWithPull(HOME_PAT, true),
       scoredPoint(HOME_PAT, false),
-      scoredPointWithPull(HOME_PAT, false),
+      scoredPointWithPull(HOME_PAT, true),
       scoredPoint(HOME_PAT, false),
     ]);
     const n = buildNarrative(payload);
 
-    expect(n.secondHalfStartPoint).toBe(3);
+    expect(n.halves?.secondHalfStartPoint).toBe(3);
     expect(n.stretches).toHaveLength(1);
     expect(n.stretches[0]!.half).toBe("spans");
   });
@@ -799,14 +884,14 @@ describe("buildNarrative stretches", () => {
   it("derives every stretch half from the boundary for fixture 1013 (null when no boundary)", () => {
     const n = buildNarrative(payload1013());
 
-    if (n.secondHalfStartPoint === null) {
+    if (n.halves === null) {
       expect(n.stretches.every((s) => s.half === null)).toBe(true);
     } else {
       for (const s of n.stretches) {
         const expected =
-          s.endPointNumber < n.secondHalfStartPoint
+          s.endPointNumber < n.halves.secondHalfStartPoint
             ? 1
-            : s.startPointNumber >= n.secondHalfStartPoint
+            : s.startPointNumber >= n.halves.secondHalfStartPoint
               ? 2
               : "spans";
         expect(s.half).toBe(expected);
@@ -906,7 +991,7 @@ describe("buildNarrative conversions", () => {
     ]);
     const n = buildNarrative(payload);
 
-    expect(n.secondHalfStartPoint).toBe(5);
+    expect(n.halves?.secondHalfStartPoint).toBe(5);
     expect(n.conversions).toEqual([
       {
         team: payload.game.homeTeam,
@@ -1007,7 +1092,7 @@ describe("buildNarrative conversions", () => {
     ]);
     const n = buildNarrative(payload);
 
-    expect(n.secondHalfStartPoint).toBe(3);
+    expect(n.halves?.secondHalfStartPoint).toBe(3);
     expect(n.conversions).toEqual([
       {
         team: payload.game.homeTeam,
