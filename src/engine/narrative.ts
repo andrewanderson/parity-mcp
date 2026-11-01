@@ -1,4 +1,9 @@
 import type { Event, GamePayload } from "../domain/types.js";
+import {
+  buildScoreTimelineAndStoryFacts,
+  type ScoreTimelineItem,
+  type ScoringRun,
+} from "./timeline.js";
 
 /**
  * How a stretch of consecutive points is characterized: a single team's
@@ -215,14 +220,108 @@ export function buildPointNotes(payload: GamePayload): PointNote[] {
 }
 
 /**
+ * Timeline slice covering the inclusive point-number span [start, end].
+ */
+function spanItems(
+  timeline: readonly ScoreTimelineItem[],
+  start: number,
+  end: number,
+): ScoreTimelineItem[] {
+  return timeline.filter(
+    (item) => item.pointNumber >= start && item.pointNumber <= end,
+  );
+}
+
+/**
+ * Scorer tallies by raw name over the slice's non-null scorers, preserving
+ * first-seen order. Null scorers are unattributable and never counted.
+ */
+function scorerTallies(
+  items: readonly ScoreTimelineItem[],
+): Array<{ name: string; goals: number }> {
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.scorer === null) continue;
+    const next = (counts.get(item.scorer) ?? 0) + 1;
+    if (next === 1) order.push(item.scorer);
+    counts.set(item.scorer, next);
+  }
+  return order.map((name) => ({ name, goals: counts.get(name) ?? 0 }));
+}
+
+/**
+ * Classify stretches over the timeline's scoring runs only (reused, never
+ * recomputed). Greedily group consecutive runs into an alternation block
+ * while every run has length 1, each run is contiguous with its neighbour,
+ * and the teams alternate between exactly two teams: the block is on-serve
+ * when every timeline point in its span recorded a HOLD, otherwise trades.
+ * Every remaining run is its own stretch, kind "run", carrying the run's
+ * team (a length-1 run is a one-point run stretch). Scorer tallies are
+ * built per stretch span from the timeline slice's non-null raw scorers.
+ */
+function buildStretches(
+  timeline: readonly ScoreTimelineItem[],
+  scoringRuns: readonly ScoringRun[],
+): Stretch[] {
+  const stretches: Stretch[] = [];
+  let i = 0;
+  while (i < scoringRuns.length) {
+    let j = i;
+    const blockTeams = new Set<string>([scoringRuns[i]!.team]);
+    while (j + 1 < scoringRuns.length) {
+      const current = scoringRuns[j]!;
+      const next = scoringRuns[j + 1]!;
+      if (
+        current.length === 1 &&
+        next.length === 1 &&
+        next.startPointNumber === current.endPointNumber + 1 &&
+        next.team !== current.team &&
+        (blockTeams.size < 2 || blockTeams.has(next.team))
+      ) {
+        blockTeams.add(next.team);
+        j += 1;
+      } else {
+        break;
+      }
+    }
+    const first = scoringRuns[i]!;
+    const last = scoringRuns[j]!;
+    const slice = spanItems(timeline, first.startPointNumber, last.endPointNumber);
+    if (j > i) {
+      const allHold = slice.every((item) => item.holdOrBreak === "HOLD");
+      stretches.push({
+        kind: allHold ? "on-serve" : "trades",
+        startPointNumber: first.startPointNumber,
+        endPointNumber: last.endPointNumber,
+        team: null,
+        scorers: scorerTallies(slice),
+      });
+    } else {
+      stretches.push({
+        kind: "run",
+        startPointNumber: first.startPointNumber,
+        endPointNumber: last.endPointNumber,
+        team: first.team,
+        scorers: scorerTallies(slice),
+      });
+    }
+    i = j + 1;
+  }
+  return stretches;
+}
+
+/**
  * Derive the narrative payload from a canonical game payload. Deterministic
  * and pure: nothing is invented, and unattributable data yields nulls or
- * empty lists. Stretches and conversions are filled by later tasks.
+ * empty lists. Stretches are classified from the timeline's scoring runs;
+ * conversions are filled by a later task.
  */
 export function buildNarrative(payload: GamePayload): NarrativePayload {
+  const { timeline, storyFacts } = buildScoreTimelineAndStoryFacts(payload);
   return {
     secondHalfStartPoint: buildHalfBoundary(payload),
-    stretches: [],
+    stretches: buildStretches(timeline, storyFacts.scoringRuns),
     conversions: [],
     pointNotes: buildPointNotes(payload),
   };

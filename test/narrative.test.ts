@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { ApiEvent, ApiGame, GamePayload, SupportedLeague } from "../src/domain/types.js";
+import type {
+  ApiEvent,
+  ApiGame,
+  ApiPoint,
+  ApiStatLine,
+  GamePayload,
+  SupportedLeague,
+} from "../src/domain/types.js";
 import { canonicalizeGame } from "../src/data/normalize.js";
 import { buildNarrative } from "../src/engine/narrative.js";
+import { buildScoreTimelineAndStoryFacts } from "../src/engine/timeline.js";
+
+import game1013 from "./fixtures/captures/game-1013.json";
 
 const league24: SupportedLeague = {
   id: 24,
@@ -137,6 +147,29 @@ describe("buildPointNotes gap detection", () => {
 const SCORER = "Score Sally";
 const DEFENCE = "Dana D";
 
+function statLine(team: string | null): ApiStatLine {
+  return {
+    goals: 0,
+    assists: 0,
+    second_assists: 0,
+    d_blocks: 0,
+    completions: 0,
+    throw_aways: 0,
+    threw_drops: 0,
+    catches: 0,
+    drops: 0,
+    pulls: 0,
+    callahan: 0,
+    o_points_for: 0,
+    o_points_against: 0,
+    d_points_for: 0,
+    d_points_against: 0,
+    points_played: 0,
+    pay: 0,
+    team,
+  };
+}
+
 /** A named typed event (DEFENSE/POINT/...) with a parseable shared timestamp. */
 function namedEvent(type: string, actor: string): ApiEvent {
   return {
@@ -224,5 +257,222 @@ describe("buildPointNotes term classification", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+  });
+});
+
+const HOME_PAT = "Home Pat";
+const AWAY_BEA = "Away Bea";
+
+/** A scored point: the scorer's team on offence (hold) or defence (break). */
+function scoredPoint(scorer: string, holds: boolean): ApiPoint {
+  const other = scorer === HOME_PAT ? AWAY_BEA : HOME_PAT;
+  return {
+    offensePlayers: holds ? [scorer] : [other],
+    defensePlayers: holds ? [other] : [scorer],
+    events: [pointEvent(scorer)],
+  };
+}
+
+/** A point whose scorer resolves to no team (absent stats team, mixed lines). */
+function unattributedPoint(): ApiPoint {
+  return {
+    offensePlayers: ["Mystery May", AWAY_BEA],
+    defensePlayers: ["Mystery May", HOME_PAT],
+    events: [pointEvent("Mystery May")],
+  };
+}
+
+function stretchPayload(points: ApiPoint[], stats: Record<string, ApiStatLine> = {}): GamePayload {
+  return canonicalizeGame(
+    {
+      id: 9995,
+      league_id: 24,
+      status: "final",
+      week: 1,
+      homeTeam: "Team A (Alice)",
+      awayTeam: "Team B (Bob)",
+      homeRoster: [HOME_PAT],
+      awayRoster: [AWAY_BEA],
+      homeScore: points.length,
+      awayScore: 0,
+      points,
+      stats,
+    },
+    league24,
+  );
+}
+
+function payload1013(): GamePayload {
+  return canonicalizeGame(game1013 as unknown as ApiGame, league24);
+}
+
+/** Expanded point-number span of a stretch, inclusive. */
+function spanPoints(stretch: { startPointNumber: number; endPointNumber: number }): number[] {
+  const points: number[] = [];
+  for (let p = stretch.startPointNumber; p <= stretch.endPointNumber; p += 1) {
+    points.push(p);
+  }
+  return points;
+}
+
+describe("buildNarrative stretches", () => {
+  it("partitions attributed scored points exactly once for fixture 1013", () => {
+    const payload = payload1013();
+    const n = buildNarrative(payload);
+    const { timeline } = buildScoreTimelineAndStoryFacts(payload);
+    const attributed = timeline.filter((t) => t.scoringTeam !== null).map((t) => t.pointNumber);
+
+    expect(n.stretches.length).toBeGreaterThan(0);
+    // Union of stretch spans (pointNumbers, in order) equals attributed exactly once.
+    expect(n.stretches.flatMap(spanPoints)).toEqual(attributed);
+
+    for (const stretch of n.stretches) {
+      const slice = timeline.filter(
+        (t) => t.pointNumber >= stretch.startPointNumber && t.pointNumber <= stretch.endPointNumber,
+      );
+      if (stretch.kind === "run") {
+        expect(stretch.team).not.toBeNull();
+        expect(
+          slice.every((t) => t.scoringTeam !== null && t.scoringTeam === stretch.team),
+        ).toBe(true);
+      } else {
+        expect(stretch.team).toBeNull();
+      }
+      // Scorer tallies cover exactly the slice's non-null scorers.
+      const tally = new Map(stretch.scorers.map((s) => [s.name, s.goals]));
+      expect([...tally.values()].reduce((sum, g) => sum + g, 0)).toBe(
+        slice.filter((t) => t.scorer !== null).length,
+      );
+      for (const item of slice) {
+        if (item.scorer !== null) {
+          expect(tally.get(item.scorer)).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it("classifies an all-hold alternation as on-serve with scorer tallies", () => {
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.stretches).toEqual([
+      {
+        kind: "on-serve",
+        startPointNumber: 1,
+        endPointNumber: 4,
+        team: null,
+        scorers: [
+          { name: "Home Pat", goals: 2 },
+          { name: "Away Bea", goals: 2 },
+        ],
+      },
+    ]);
+  });
+
+  it("classifies a hold-break alternation as trades", () => {
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, false),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.stretches).toEqual([
+      {
+        kind: "trades",
+        startPointNumber: 1,
+        endPointNumber: 2,
+        team: null,
+        scorers: [
+          { name: "Home Pat", goals: 1 },
+          { name: "Away Bea", goals: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it("classifies three points by one team as a run stretch carrying the team", () => {
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, false),
+      scoredPoint(HOME_PAT, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.stretches).toEqual([
+      {
+        kind: "run",
+        startPointNumber: 1,
+        endPointNumber: 3,
+        team: payload.game.homeTeam,
+        scorers: [{ name: "Home Pat", goals: 3 }],
+      },
+    ]);
+  });
+
+  it("greedy grouping only forms alternation blocks from length-1 contiguous runs", () => {
+    // Runs: home(2), away(1), home(1). The length-2 run is never in a block;
+    // the trailing two length-1 runs form an all-hold on-serve block.
+    const payload = stretchPayload([
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(HOME_PAT, true),
+      scoredPoint(AWAY_BEA, true),
+      scoredPoint(HOME_PAT, true),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.stretches).toEqual([
+      {
+        kind: "run",
+        startPointNumber: 1,
+        endPointNumber: 2,
+        team: payload.game.homeTeam,
+        scorers: [{ name: "Home Pat", goals: 2 }],
+      },
+      {
+        kind: "on-serve",
+        startPointNumber: 3,
+        endPointNumber: 4,
+        team: null,
+        scorers: [
+          { name: "Away Bea", goals: 1 },
+          { name: "Home Pat", goals: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it("excludes an unattributable point from stretches and keeps the partition", () => {
+    const payload = stretchPayload(
+      [scoredPoint(HOME_PAT, true), unattributedPoint(), scoredPoint(AWAY_BEA, true)],
+      { "Mystery May": statLine("Unknown") },
+    );
+    const n = buildNarrative(payload);
+    const { timeline } = buildScoreTimelineAndStoryFacts(payload);
+
+    expect(timeline[1]!.scoringTeam).toBe(null);
+    const attributed = timeline.filter((t) => t.scoringTeam !== null).map((t) => t.pointNumber);
+    expect(n.stretches.flatMap(spanPoints)).toEqual(attributed);
+    // The unattributed point 2 belongs to no stretch: two one-point run stretches.
+    expect(n.stretches).toEqual([
+      {
+        kind: "run",
+        startPointNumber: 1,
+        endPointNumber: 1,
+        team: payload.game.homeTeam,
+        scorers: [{ name: "Home Pat", goals: 1 }],
+      },
+      {
+        kind: "run",
+        startPointNumber: 3,
+        endPointNumber: 3,
+        team: payload.game.awayTeam,
+        scorers: [{ name: "Away Bea", goals: 1 }],
+      },
+    ]);
   });
 });
