@@ -133,3 +133,82 @@ describe("buildPointNotes gap detection", () => {
     ]);
   });
 });
+
+const SCORER = "Score Sally";
+const DEFENCE = "Dana D";
+
+/** A named typed event (DEFENSE/POINT/...) with a parseable shared timestamp. */
+function namedEvent(type: string, actor: string): ApiEvent {
+  return {
+    type,
+    firstActor: actor,
+    secondActor: null,
+    timestamp: "3/14/2026, 6:00:00 PM",
+  };
+}
+
+/** A DEFENSE block credited to `actor`. */
+function defenseEvent(actor: string): ApiEvent {
+  return namedEvent("DEFENSE", actor);
+}
+
+/** A POINT scored by `actor`. */
+function pointEvent(actor: string): ApiEvent {
+  return namedEvent("POINT", actor);
+}
+
+/** `count` short timed PASS events (second offsets stay under 60). */
+function passes(count: number): ApiEvent[] {
+  return Array.from({ length: count }, (_, index) => passEvent(index + 1));
+}
+
+describe("buildPointNotes term classification", () => {
+  it("awards callahan on an own block scored without a completion", () => {
+    const payload = canonical([[defenseEvent(SCORER), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+  });
+
+  it("awards double-happiness on an own block converted via completions", () => {
+    const payload = canonical([[defenseEvent(SCORER), ...passes(5), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["double-happiness"]);
+  });
+
+  it("awards transition on a block by a scoring-team player who did not score", () => {
+    const payload = canonical([[defenseEvent(DEFENCE), ...passes(3), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
+  });
+
+  it("awards clean-possession with no turnover events and eight completions", () => {
+    const payload = canonical([[...passes(8), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["clean-possession"]);
+  });
+
+  it("awards no term below the five-completion floor", () => {
+    const payload = canonical([[...passes(3), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual([]);
+  });
+
+  it("awards only transition on another player's block (never callahan or double-happiness)", () => {
+    const payload = canonical([[defenseEvent(DEFENCE), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
+  });
+
+  it("normalizes actor names before comparing the block to the scorer", () => {
+    const payload = canonical([[defenseEvent("score sally "), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(payload);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+  });
+});
