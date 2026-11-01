@@ -113,8 +113,28 @@ describe("buildNarrative half boundary", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 0, longestGapSec: null, terms: [], transitionPassCount: null },
-      { pointNumber: 2, completions: 0, longestGapSec: null, terms: [], transitionPassCount: null },
+      {
+        pointNumber: 1,
+        completions: 0,
+        longestGapSec: null,
+        terms: [],
+        possessionCount: 1,
+        scoringPossessionLength: 0,
+        scoringPossessionIndex: 0,
+        turnoversBeforeGoal: 0,
+        passesAfterLastTurnover: 0,
+      },
+      {
+        pointNumber: 2,
+        completions: 0,
+        longestGapSec: null,
+        terms: [],
+        possessionCount: 1,
+        scoringPossessionLength: 0,
+        scoringPossessionIndex: 0,
+        turnoversBeforeGoal: 0,
+        passesAfterLastTurnover: 0,
+      },
     ]);
     expect(narrative.stretches).toEqual([]);
     expect(narrative.conversions).toEqual([
@@ -144,7 +164,17 @@ describe("buildPointNotes gap detection", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 3, longestGapSec: 50, terms: [], transitionPassCount: null },
+      {
+        pointNumber: 1,
+        completions: 3,
+        longestGapSec: 50,
+        terms: [],
+        possessionCount: 1,
+        scoringPossessionLength: 0,
+        scoringPossessionIndex: 0,
+        turnoversBeforeGoal: 0,
+        passesAfterLastTurnover: 0,
+      },
     ]);
   });
 
@@ -154,13 +184,29 @@ describe("buildPointNotes gap detection", () => {
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes).toEqual([
-      { pointNumber: 1, completions: 2, longestGapSec: null, terms: [], transitionPassCount: null },
+      {
+        pointNumber: 1,
+        completions: 2,
+        longestGapSec: null,
+        terms: [],
+        possessionCount: 1,
+        scoringPossessionLength: 0,
+        scoringPossessionIndex: 0,
+        turnoversBeforeGoal: 0,
+        passesAfterLastTurnover: 0,
+      },
     ]);
   });
 });
 
 const SCORER = "Score Sally";
 const DEFENCE = "Dana D";
+const OtherO = "Other O";
+
+/** A point with recorded lines (raw names) and raw events. */
+function linedPoint(offense: string[], defense: string[], events: ApiEvent[]): ApiPoint {
+  return { offensePlayers: offense, defensePlayers: defense, events };
+}
 
 function statLine(team: string | null): ApiStatLine {
   return {
@@ -225,32 +271,11 @@ describe("buildPointNotes term classification", () => {
     expect(narrative.pointNotes[0]!.terms).toEqual(["double-happiness"]);
   });
 
-  it("awards transition on a block by a scoring-team player who did not score", () => {
-    const payload = canonical([[defenseEvent(DEFENCE), ...passes(3), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
-  });
-
-  it("awards clean-possession with no turnover events and eight completions", () => {
-    const payload = canonical([[...passes(8), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual(["clean-possession"]);
-  });
-
-  it("awards no term below the five-completion floor", () => {
-    const payload = canonical([[...passes(3), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual([]);
-  });
-
-  it("awards only transition on another player's block (never callahan or double-happiness)", () => {
+  it("awards no term on another player's block", () => {
     const payload = canonical([[defenseEvent(DEFENCE), pointEvent(SCORER)]]);
     const narrative = buildNarrative(payload);
 
-    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
+    expect(narrative.pointNotes[0]!.terms).toEqual([]);
   });
 
   it("awards no term to a recorded point without a POINT event (DROP chain)", () => {
@@ -267,57 +292,162 @@ describe("buildPointNotes term classification", () => {
     expect(narrative.pointNotes[0]!.terms).toEqual([]);
   });
 
-  it("does not earn transition when the scoring possession ran four passes after the turnover", () => {
-    // DEFENSE by "Dana D", then 4 PASSes, POINT by "Score Sally": a four-pass
-    // possession is an ordinary possession, terms [] and count null.
-    const payload = canonical([[defenseEvent(DEFENCE), ...passes(4), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual([]);
-    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(null);
-  });
-
-  it("earns transition when the scoring possession ran three passes after the turnover", () => {
-    // Same shape with 3 PASSes: the quick counter still earns transition and
-    // reports the possession's pass count.
-    const payload = canonical([[defenseEvent(DEFENCE), ...passes(3), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
-    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(3);
-  });
-
-  it("earns transition with a zero-pass counter and reports the count", () => {
-    // THROWAWAY by "Thrower T", then POINT by "Score Sally": the fastest
-    // counter there is, count 0.
-    const payload = canonical([[namedEvent("THROWAWAY", "Thrower T"), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(payload);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual(["transition"]);
-    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(0);
-  });
-
-  it("keeps callahan and double happiness without adding transition", () => {
-    // Own DEFENSE + 0 PASSes -> callahan, own DEFENSE + 5 PASSes ->
-    // double-happiness; neither gains transition and neither reports a count.
-    const callahan = canonical([[defenseEvent(SCORER), pointEvent(SCORER)]]);
-    const narrative = buildNarrative(callahan);
-
-    expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
-    expect(narrative.pointNotes[0]!.transitionPassCount).toBe(null);
-
-    const double = canonical([[defenseEvent(SCORER), ...passes(5), pointEvent(SCORER)]]);
-    const doubleNarrative = buildNarrative(double);
-
-    expect(doubleNarrative.pointNotes[0]!.terms).toEqual(["double-happiness"]);
-    expect(doubleNarrative.pointNotes[0]!.transitionPassCount).toBe(null);
-  });
-
   it("normalizes actor names before comparing the block to the scorer", () => {
     const payload = canonical([[defenseEvent("score sally "), pointEvent(SCORER)]]);
     const narrative = buildNarrative(payload);
 
     expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+  });
+});
+
+describe("buildPointNotes possession chain", () => {
+  it("counts one possession per turnover and reports the scoring possession", () => {
+    // PASS, THROWAWAY, DEFENSE (the throw and its block: one moment), PASS,
+    // PASS, POINT. Possession 1 holds for one pass; possession 2 opens on the
+    // block and scores after two passes.
+    const payload = canonical([
+      [
+        passEvent(1),
+        namedEvent("THROWAWAY", "Thrower T"),
+        defenseEvent(DEFENCE),
+        passEvent(2),
+        passEvent(3),
+        pointEvent(SCORER),
+      ],
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(2);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(2);
+    expect(n.pointNotes[0]!.terms).toEqual([]);
+  });
+
+  it("counts a zero-pass possession when a team takes the disc and turns it over", () => {
+    // THROWAWAY, THROWAWAY, POINT: two standalone turnovers, each followed by
+    // another turnover moment, so the scoring possession holds zero passes.
+    const payload = canonical([
+      [
+        namedEvent("THROWAWAY", "Thrower T"),
+        namedEvent("THROWAWAY", "Other O"),
+        pointEvent(SCORER),
+      ],
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(3);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(3);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(0);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(2);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(0);
+  });
+
+  it("reports possession one when the scoring team held from the start", () => {
+    const payload = canonical([[...passes(3), pointEvent(SCORER)]]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(1);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(1);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(3);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(0);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(0);
+  });
+
+  it("no longer reports transition or clean-possession terms", () => {
+    // A point with a turnover and a later goal earns no transition term, and
+    // a patient no-turnover point earns no clean-possession term.
+    const turnover = canonical([
+      [passEvent(1), namedEvent("THROWAWAY", "Thrower T"), passEvent(2), pointEvent(SCORER)],
+    ]);
+    const turnoverNarrative = buildNarrative(turnover);
+
+    expect(turnoverNarrative.pointNotes[0]!.terms).toEqual([]);
+
+    const patient = canonical([[...passes(6), pointEvent(SCORER)]]);
+    const patientNarrative = buildNarrative(patient);
+
+    expect(patientNarrative.pointNotes[0]!.terms).toEqual([]);
+  });
+
+  it("keeps callahan and double happiness", () => {
+    // Own DEFENSE + 0 PASSes -> callahan; own DEFENSE + 5 PASSes ->
+    // double-happiness; the pass-count rules are unchanged.
+    const callahan = canonical([[defenseEvent(SCORER), pointEvent(SCORER)]]);
+    const narrative = buildNarrative(callahan);
+
+    expect(narrative.pointNotes[0]!.terms).toEqual(["callahan"]);
+
+    const double = canonical([[defenseEvent(SCORER), ...passes(5), pointEvent(SCORER)]]);
+    const doubleNarrative = buildNarrative(double);
+
+    expect(doubleNarrative.pointNotes[0]!.terms).toEqual(["double-happiness"]);
+  });
+
+  it("counts a throwaway immediately followed by a block as one possession change", () => {
+    // THROWAWAY ("Thrower T", offence), DEFENSE ("Dana D", defence), PASS,
+    // POINT: the throw and the block are one moment, so the possession
+    // changes once, to the blocking team.
+    const payload = canonical([
+      [
+        namedEvent("THROWAWAY", "Thrower T"),
+        defenseEvent(DEFENCE),
+        passEvent(1),
+        pointEvent(SCORER),
+      ],
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(2);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(1);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
+  });
+
+  it("counts a standalone throwaway as a possession change", () => {
+    // THROWAWAY ("Thrower T", offence), then a PASS by "Other O", then POINT:
+    // the throwaway is its own moment and the pick-up possession scores.
+    const payload = canonical([
+      [
+        namedEvent("THROWAWAY", "Thrower T"),
+        namedEvent("PASS", "Other O"),
+        pointEvent(SCORER),
+      ],
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(2);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(1);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
+  });
+
+  it("starts the chain from the offence line even when the point opens with a turnover", () => {
+    // THROWAWAY by an offence-line player ("Thrower T"), then a PASS by a
+    // defence-line player ("Dana D"), then POINT ("Other O"). The chain still
+    // starts at possession 1 with the offence line, so the defence possession
+    // that scores is possession 2.
+    const payload = stretchPayload([
+      linedPoint(
+        ["Thrower T"],
+        ["Dana D", OtherO],
+        [
+          namedEvent("THROWAWAY", "Thrower T"),
+          namedEvent("PASS", "Dana D"),
+          pointEvent(OtherO),
+        ],
+      ),
+    ]);
+    const n = buildNarrative(payload);
+
+    expect(n.pointNotes[0]!.possessionCount).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionIndex).toBe(2);
+    expect(n.pointNotes[0]!.scoringPossessionLength).toBe(1);
+    expect(n.pointNotes[0]!.turnoversBeforeGoal).toBe(1);
+    expect(n.pointNotes[0]!.passesAfterLastTurnover).toBe(1);
   });
 });
 
