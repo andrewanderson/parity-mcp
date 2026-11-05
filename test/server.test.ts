@@ -230,8 +230,33 @@ describe("parity MCP server tool wiring", () => {
     await client.close();
   });
 
-  it("parity_list_games applies the week filter server-side without a league argument", async () => {
+  it("parity_list_games treats a numeric string league argument as a league id", async () => {
     const dataDir = await makeDataDir();
+    const askedFor: Array<{ id: number } | { name: string }> = [];
+    class RecordingSource extends StubSource {
+      override async listGames(
+        leagueRef: { id: number } | { name: string },
+        options?: ListGamesOptions,
+      ): Promise<ApiGame[]> {
+        askedFor.push(leagueRef);
+        return super.listGames(leagueRef, options);
+      }
+    }
+    const mcp = createParityServer({ source: new RecordingSource(), dataDir });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    await client.connect(clientTransport);
+    // League 22 shares its name with league 21. A numeric string must
+    // resolve by id, so this must not report an ambiguous-name error.
+    const result = await call(client, "parity_list_games", { league: "22" });
+    if (!result.ok) throw new Error(result.text);
+    expect(askedFor.map((ref) => ("id" in ref ? ref.id : null))).toEqual([22]);
+    await client.close();
+  });
+
+  it("parity_list_games applies the week filter server-side without a league argument", async () => {    const dataDir = await makeDataDir();
     const source = new StubSource();
     const mcp = createParityServer({ source, dataDir });
     const client = new Client({ name: "test-client", version: "0.0.1" });

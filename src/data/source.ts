@@ -4,6 +4,10 @@ import type { ApiGame, GamePayload, SupportedLeague } from "../domain/types.js";
  * A league as chosen by the caller of a source method: how the source is
  * told which league to resolve. Either a numeric league id or an exact
  * league name from the API registry.
+ *
+ * The league id is the canonical identifier. The Parity API addresses leagues
+ * by id everywhere, and two leagues can share an identical name, so a name
+ * reference can be ambiguous where an id reference never is.
  */
 export type LeagueRef = { id: number } | { name: string };
 

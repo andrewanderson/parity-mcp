@@ -254,8 +254,8 @@ export function canonicalizeGame(
       const parsed = parseLocalTimestamp(rawEvent.timestamp);
       return {
         type: normalizeEventType(rawEvent.type),
-        firstActor: rawEvent.firstActor,
-        secondActor: rawEvent.secondActor,
+        firstActor: rawEvent.firstActor ?? null,
+        secondActor: rawEvent.secondActor ?? null,
         timestamp: rawEvent.timestamp,
         timestampLocal: parsed.timestampLocal,
         timestampSec: parsed.timestampSec,
@@ -463,7 +463,7 @@ export function qualityReport(payload: GamePayload): QualityReport {
     const outsideActors = new Set<string>();
     for (const event of point.events) {
       for (const actor of [event.firstActor, event.secondActor]) {
-        if (actor === null) continue;
+        if (actor === null || actor === undefined) continue;
         if (!lineKeys.has(identityKey(actor))) {
           outsideActors.add(actor.toLowerCase());
         }

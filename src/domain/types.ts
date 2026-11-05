@@ -15,6 +15,17 @@ export type LeagueSummary = {
   statValues: "v1" | "v2";
   lineSize: number;
   salaryCalc: string;
+  /**
+   * The league's Zuluru link, when the API reports one. Two leagues can
+   * share an identical `name`, and the Zuluru link is what tells them apart.
+   */
+  zuluru?: string | null;
+  /**
+   * A human-facing label guaranteed to be unique per league id. Equal to
+   * `name` unless another league shares that name, in which case the id is
+   * appended.
+   */
+  displayName?: string;
 };
 
 /** A league whose payloads use the current stat-value format. */
@@ -131,11 +142,17 @@ export type QualityReport = {
   warnings: QualityWarning[];
 };
 
-/** Raw event as captured from the API. */
+/**
+ * Raw event as captured from the API.
+ *
+ * The actor keys can be absent entirely: leagues 21 and 22 omit
+ * `secondActor` on single-actor events, while leagues 23 and 24 send an
+ * explicit `null`. Canonicalization normalises both to `null`.
+ */
 export type ApiEvent = {
   type: string;
-  firstActor: string | null;
-  secondActor: string | null;
+  firstActor?: string | null;
+  secondActor?: string | null;
   timestamp: string;
 };
 

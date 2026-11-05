@@ -317,11 +317,19 @@ export function createParityServer(options: ParityServerOptions): McpServer {
   return server;
 }
 
-/** Convert a tool's mixed league argument into a LeagueRef, when present. */
+/**
+ * Convert a tool's mixed league argument into a LeagueRef, when present.
+ *
+ * A numeric string is a league id, not a league name: the API addresses
+ * leagues by id, and a numeric string would otherwise be matched against
+ * league names, where it never matches and duplicate names stay ambiguous.
+ */
 function leagueRefFrom(
   league: number | string | undefined,
 ): LeagueRef | undefined {
   if (league === undefined) return undefined;
   if (typeof league === "number") return { id: league };
+  const trimmed = league.trim();
+  if (/^\d+$/.test(trimmed)) return { id: Number(trimmed) };
   return { name: league };
 }

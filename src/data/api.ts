@@ -19,6 +19,7 @@ type ApiLeagueSummary = {
   statValues: "v1" | "v2";
   lineSize: number;
   salaryCalc: string;
+  zuluru?: string | null;
 };
 
 function joinPath(baseUrl: string, suffix: string): string {
@@ -39,6 +40,10 @@ export class ParityApiSource implements DataSource {
 
   async listSupportedLeagues(): Promise<SupportedLeague[]> {
     const registry = await this.leagueRegistry();
+    const nameCounts = new Map<string, number>();
+    for (const entry of registry) {
+      nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
+    }
     const supported: SupportedLeague[] = [];
     for (const entry of registry) {
       if (entry.statValues !== "v2") continue;
@@ -48,6 +53,11 @@ export class ParityApiSource implements DataSource {
         statValues: "v2",
         lineSize: entry.lineSize,
         salaryCalc: entry.salaryCalc,
+        ...(entry.zuluru === undefined ? {} : { zuluru: entry.zuluru }),
+        displayName:
+          (nameCounts.get(entry.name) ?? 0) > 1
+            ? `${entry.name} [${entry.id}]`
+            : entry.name,
       });
     }
     return supported;
@@ -134,19 +144,35 @@ export class ParityApiSource implements DataSource {
   }
 
   /**
-   * Resolve a caller's league reference against the full registry. Only a
-   * supported `v2` league is ever returned; requesting a `v1` league (by id
-   * or by exact name) is a distinct version error, not a not-found.
+   * Resolve a caller's league reference against the full registry.
+   *
+   * The league id is the canonical identifier: the Parity API itself always
+   * addresses leagues by id, and two leagues can share an identical name.
+   * An id reference therefore resolves directly. A name reference resolves
+   * by exact name, and is only ambiguous when the registry really holds
+   * several leagues under that name.
+   *
+   * Only a supported `v2` league is ever returned; requesting a `v1` league
+   * (by id or by exact name) is a distinct version error, not a not-found.
    */
   private async resolveLeague(league: LeagueRef): Promise<SupportedLeague> {
     const registry = await this.leagueRegistry();
 
     let matches: ApiLeagueSummary[];
-    if ("name" in league && league.name !== undefined) {
-      // Name path: exact match against the raw registry name.
-      matches = registry.filter((entry) => entry.name === league.name);
+    const wantedId = leagueIdOf(league);
+    if (wantedId !== undefined) {
+      // Id path: ids are unique, so there is never more than one match.
+      matches = registry.filter((entry) => entry.id === wantedId);
     } else {
-      matches = registry.filter((entry) => entry.id === (league as { id: number }).id);
+      // Name path: a numeric name is really an id in string clothing. The
+      // registry's names are never numeric, so this only ever redirects a
+      // reference the name path could not have resolved anyway.
+      const name = leagueNameOf(league);
+      const numericId = numericLeagueId(name);
+      matches =
+        numericId === undefined
+          ? registry.filter((entry) => entry.name === name)
+          : registry.filter((entry) => entry.id === numericId);
     }
 
     if (matches.length === 0) {
@@ -157,9 +183,13 @@ export class ParityApiSource implements DataSource {
       );
     }
     if (matches.length > 1) {
+      const ids = matches.map((m) => m.id).join(", ");
+      const detail = matches
+        .map((m) => `${m.id}${m.zuluru ? ` (${m.zuluru})` : ""}`)
+        .join("; ");
       throw new SourceError(
         "LEAGUE_NOT_FOUND",
-        `League ${leagueToString(league)} is ambiguous (${matches.map((m) => m.id).join(", ")}); use the league id.`,
+        `League ${leagueToString(league)} is ambiguous (${ids}); use the league id. Candidates: ${detail}.`,
         league,
       );
     }
@@ -177,6 +207,7 @@ export class ParityApiSource implements DataSource {
       statValues: "v2",
       lineSize: match.lineSize,
       salaryCalc: match.salaryCalc,
+      ...(match.zuluru === undefined ? {} : { zuluru: match.zuluru }),
     };
   }
 
@@ -203,6 +234,27 @@ function leagueToString(league: LeagueRef): string {
     return `name "${league.name}"`;
   }
   return `id ${(league as { id: number }).id}`;
+}
+
+/** The league id carried by a reference, when it carries one. */
+function leagueIdOf(league: LeagueRef): number | undefined {
+  return "id" in league ? league.id : undefined;
+}
+
+/** The league name carried by a reference, when it carries one. */
+function leagueNameOf(league: LeagueRef): string | undefined {
+  return "name" in league ? league.name : undefined;
+}
+
+/**
+ * Parse a league reference string as a league id. Only a plain run of digits
+ * counts, so no real league name is ever mistaken for an id.
+ */
+function numericLeagueId(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  return Number(trimmed);
 }
 
 /** Create an HTTP-backed parity data source. */

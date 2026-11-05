@@ -166,8 +166,40 @@ describe("canonicalizeGame", () => {
     ).toBe(true);
   });
 
-  it("warns for event actors outside both recorded lines", () => {
+  it("treats an omitted second actor as no actor, not as a crash", () => {
+    // Leagues 21 and 22 omit the secondActor key entirely on events that
+    // have only one actor; leagues 23 and 24 send an explicit null.
     const payload = canonicalizeGame(
+      syntheticGame({
+        points: [
+          {
+            offensePlayers: ["Quinn Fielder"],
+            defensePlayers: ["Casey Brook"],
+            events: [
+              {
+                type: "PULL",
+                firstActor: "Casey Brook",
+                timestamp: "3/14/2026, 6:00:00 PM",
+              } as never,
+              {
+                type: "THROWAWAY",
+                firstActor: "Quinn Fielder",
+                timestamp: "3/14/2026, 6:00:10 PM",
+              } as never,
+            ],
+          },
+        ],
+      }),
+      league,
+    );
+    expect(payload.game.points[0].events[0].secondActor).toBeNull();
+    expect(payload.game.points[0].events[1].secondActor).toBeNull();
+    expect(
+      payload.quality.warnings.some((w) => w.code === "ACTOR_OUTSIDE_LINES"),
+    ).toBe(false);
+  });
+
+  it("warns for event actors outside both recorded lines", () => {    const payload = canonicalizeGame(
       syntheticGame({
         points: [
           {
