@@ -230,12 +230,18 @@ export function buildSalaryLedger(payload: GamePayload): SalaryLedger {
             for (const player of point.offensePlayers) {
               add(player.raw, "HOLD", i);
             }
-          } else if (line === "defense") {
+          } else {
+            // The scorer is on the defense row or on neither recorded line
+            // (a mid-point sub missing from the saved arrays). The live API
+            // pays the recorded D-line its BREAK in both cases: verified
+            // against all 154 games of leagues 20-24, where every game with
+            // an outside-line scorer shows D-line pay exactly BREAK x6 over
+            // the derived ledger and no O-line bonus. Awarding nothing here
+            // (the old behaviour) made the salary gate reject those games.
             for (const player of point.defensePlayers) {
               add(player.raw, "BREAK", i);
             }
           }
-          // No line-specific salary when the scorer is on neither recorded line.
           break;
         }
         case "DEFENSE":

@@ -248,7 +248,7 @@ describe("buildInteractions: actor outside the recorded lines", () => {
     ).not.toContain("ghost");
   });
 
-  it("an actor outside the line earns no line-specific salary distribution for a shared pair point", () => {
+  it("an actor outside the line earns no line salary of his own; the D-line keeps its break", () => {
     const payload = syntheticPayload(
       [
         {
@@ -257,16 +257,20 @@ describe("buildInteractions: actor outside the recorded lines", () => {
           events: [{ type: "POINT", firstActor: "Ghost", secondActor: null }],
         },
       ],
-      { Ann: statLine(0), Bo: statLine(0), Dee: statLine(0), Eli: statLine(0), Ghost: statLine(10000) },
+      { Ann: statLine(0), Bo: statLine(0), Dee: statLine(2000), Eli: statLine(2000), Ghost: statLine(10000) },
     );
     const ledger = buildSalaryLedger(payload);
     const interactions = buildInteractions(payload, ledger);
-    // Ghost's event salary must not leak into any recorded pair's salary points.
+    // Ghost's goal salary must not leak into any recorded pair's salary
+    // points, and Ghost himself is in no pair (the case pinned above).
+    // The recorded D-line still shares its own line salary: the BREAK of
+    // 2000 each, which is the API's rule for a scorer outside both lines.
     for (const pair of [...interactions.teammatePairs, ...interactions.opponentPairs]) {
       expect(pair.playerA.toLowerCase()).not.toBe("ghost");
       expect(pair.playerB.toLowerCase()).not.toBe("ghost");
       for (const point of pair.salaryPoints) {
-        expect(point.salaryA + point.salaryB).toBe(0);
+        expect([0, 2000]).toContain(point.salaryA);
+        expect([0, 2000]).toContain(point.salaryB);
       }
     }
   });

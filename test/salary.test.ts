@@ -262,7 +262,7 @@ describe("buildSalaryLedger: synthetic points", () => {
     expect(salaryWarnings(ledger)).toEqual([]);
   });
 
-  it("a scorer outside both recorded lines earns event salary but no line salary", () => {
+  it("a scorer outside both recorded lines earns event salary while the recorded D-line earns the break", () => {
     const payload = syntheticPayload(
       [
         {
@@ -274,7 +274,7 @@ describe("buildSalaryLedger: synthetic points", () => {
           ],
         },
       ],
-      { Bo: statLine(10500), Ghost: statLine(10500), Dee: statLine(0) },
+      { Bo: statLine(10500), Ghost: statLine(10500), Dee: statLine(2000) },
     );
     const ledger = buildSalaryLedger(payload);
     // Bo is the assist thrower: completion 500 + assist 10000.
@@ -285,7 +285,12 @@ describe("buildSalaryLedger: synthetic points", () => {
       ["CATCH", 500],
       ["GOAL", 10000],
     ]);
-    expect(ledger.points[0].playerSalaries.every((s) => !s.components.some((c) => c.ruleName === "HOLD" || c.ruleName === "BREAK"))).toBe(true);
+    // The live API pays the recorded D-line its BREAK whenever the scorer
+    // is not on the recorded O-line, so the ledger matches its pay.
+    expect(salariesFor(ledger, 1, "Dee").components.map((c) => [c.ruleName, c.amount])).toEqual([
+      ["BREAK", 2000],
+    ]);
+    expect(ledger.points[0].playerSalaries.every((s) => !s.components.some((c) => c.ruleName === "HOLD"))).toBe(true);
     expect(salaryWarnings(ledger)).toEqual([]);
   });
 
