@@ -22,6 +22,7 @@ import {
   buildInteractions,
   type InteractionsPayload,
 } from "./engine/interactions.js";
+import { buildPointStats } from "./engine/pointStats.js";
 
 /**
  * A summary of one listed game: raw list data reduced to its identifying
@@ -208,7 +209,7 @@ function textResult(value: unknown): { content: Array<{ type: "text"; text: stri
 }
 
 /**
- * Create the parity MCP server with exactly the four canonical tools. There
+ * Create the parity MCP server with exactly the five canonical tools. There
  * is no save tool: `parity_get_game` persists every assembled canonical game
  * automatically into `dataDir` via `persistCanonicalGame`.
  */
@@ -308,6 +309,27 @@ export function createParityServer(options: ParityServerOptions): McpServer {
           teammatePairs: payload.interactions.teammatePairs,
           opponentPairs: payload.interactions.opponentPairs,
         });
+      } catch (cause) {
+        return errorResult(cause);
+      }
+    },
+  );
+
+  server.registerTool(
+    "parity_get_point_stats",
+    {
+      description:
+        "Get per-player per-point stat counts derived from the event stream, plus game-wide totals.",
+      inputSchema: {
+        league: z.union([z.number().int(), z.string()]).optional(),
+        gameId: z.union([z.number().int(), z.string()]),
+      },
+    },
+    async (args): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> => {
+      try {
+        const ref = leagueRefFrom(args.league);
+        const { payload } = await gameForLeague(source, ref, args.gameId);
+        return textResult(buildPointStats(payload));
       } catch (cause) {
         return errorResult(cause);
       }

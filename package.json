@@ -3,6 +3,50 @@
   "version": "0.1.0",
   "license": "UNLICENSED",
   "type": "module",
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./lib": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./engine/salary": {
+      "types": "./dist/engine/salary.d.ts",
+      "default": "./dist/engine/salary.js"
+    },
+    "./engine/pointStats": {
+      "types": "./dist/engine/pointStats.d.ts",
+      "default": "./dist/engine/pointStats.js"
+    },
+    "./engine/interactions": {
+      "types": "./dist/engine/interactions.d.ts",
+      "default": "./dist/engine/interactions.js"
+    },
+    "./data/api": {
+      "types": "./dist/data/api.d.ts",
+      "default": "./dist/data/api.js"
+    },
+    "./data/source": {
+      "types": "./dist/data/source.d.ts",
+      "default": "./dist/data/source.js"
+    },
+    "./data/normalize": {
+      "types": "./dist/data/normalize.d.ts",
+      "default": "./dist/data/normalize.js"
+    },
+    "./domain/types": {
+      "types": "./dist/domain/types.d.ts",
+      "default": "./dist/domain/types.js"
+    }
+  },
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",

@@ -188,7 +188,7 @@ describe("parity_get_game probe error semantics", () => {
 });
 
 describe("parity MCP server tool wiring", () => {
-  it("registers exactly the four expected tool names", async () => {
+  it("registers exactly the five expected tool names", async () => {
     const dataDir = await makeDataDir();
     const mcp = createParityServer({ source: new StubSource(), dataDir });
     const client = new Client({ name: "test-client", version: "0.0.1" });
@@ -200,6 +200,7 @@ describe("parity MCP server tool wiring", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "parity_get_game",
       "parity_get_interactions",
+      "parity_get_point_stats",
       "parity_list_games",
       "parity_list_leagues",
     ]);
@@ -365,6 +366,36 @@ describe("parity MCP server tool wiring", () => {
     expect(
       Object.keys(data).filter((key) => key !== "teammatePairs" && key !== "opponentPairs"),
     ).toEqual([]);
+    await client.close();
+  });
+
+  it("parity_get_point_stats returns per-player per-point stat counts", async () => {
+    const dataDir = await makeDataDir();
+    const mcp = createParityServer({ source: new StubSource(), dataDir });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    await client.connect(clientTransport);
+    const result = await call(client, "parity_get_point_stats", {
+      league: LEAGUE_ID,
+      gameId: 1000,
+    });
+    if (!result.ok) throw new Error(result.text);
+    const data = result.data as {
+      points: Array<{
+        pointNumber: number;
+        players: Array<{ name: string; counts: { goals: number } }>;
+      }>;
+      totals: Array<{ name: string; counts: { goals: number } }>;
+    };
+    expect(Array.isArray(data.points)).toBe(true);
+    expect(data.points.length).toBe(45);
+    expect(Array.isArray(data.totals)).toBe(true);
+    const jonRowe = data.totals.find(
+      (entry) => entry.name.toLowerCase() === "jon rowe",
+    );
+    expect(jonRowe?.counts.goals).toBe(3);
     await client.close();
   });
 });
