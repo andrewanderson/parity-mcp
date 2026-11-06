@@ -263,16 +263,21 @@ describe("buildInteractions: actor outside the recorded lines", () => {
     const interactions = buildInteractions(payload, ledger);
     // Ghost's goal salary must not leak into any recorded pair's salary
     // points, and Ghost himself is in no pair (the case pinned above).
-    // The recorded D-line still shares its own line salary: the BREAK of
-    // 2000 each, which is the API's rule for a scorer outside both lines.
     for (const pair of [...interactions.teammatePairs, ...interactions.opponentPairs]) {
       expect(pair.playerA.toLowerCase()).not.toBe("ghost");
       expect(pair.playerB.toLowerCase()).not.toBe("ghost");
-      for (const point of pair.salaryPoints) {
-        expect([0, 2000]).toContain(point.salaryA);
-        expect([0, 2000]).toContain(point.salaryB);
-      }
     }
+    // The recorded D-line keeps its own line salary: the BREAK of 2000 each.
+    // This is the API's rule for a scorer outside both lines, and the exact
+    // values are pinned so a reversion to "no line salary when the scorer is
+    // on neither row" fails here rather than passing on a loose range.
+    const defensePair = pairOf(interactions, "teammate", "Dee", "Eli");
+    expect(defensePair.salaryPoints[0]?.salaryA).toBe(2000);
+    expect(defensePair.salaryPoints[0]?.salaryB).toBe(2000);
+    // The recorded O-line earns nothing: the scorer was not on it.
+    const offensePair = pairOf(interactions, "teammate", "Ann", "Bo");
+    expect(offensePair.salaryPoints[0]?.salaryA).toBe(0);
+    expect(offensePair.salaryPoints[0]?.salaryB).toBe(0);
   });
 });
 
