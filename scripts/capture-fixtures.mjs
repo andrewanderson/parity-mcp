@@ -11,6 +11,11 @@ const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "t
 const LEAGUES = ["leagues"];
 const SEASON = "24";
 const GAMES = ["1000", "1001", "1002", "1008", "1013"];
+// Games outside `SEASON`, as [league id, game id]. Game 861 has a point
+// scored by a player on neither recorded line, a case no season-24 capture
+// holds, so the salary reconciliation test would otherwise never exercise
+// it offline.
+const OTHER_GAMES = [["20", "861"]];
 
 async function fetchJson(urlPath, outName) {
   const url = `${BASE_URL}${urlPath}`;
@@ -35,6 +40,9 @@ async function main() {
   await fetchJson(`/api/${SEASON}/games`, `games-${SEASON}.json`);
   for (const gameId of GAMES) {
     await fetchJson(`/api/${SEASON}/games/${gameId}`, `game-${gameId}.json`);
+  }
+  for (const [leagueId, gameId] of OTHER_GAMES) {
+    await fetchJson(`/api/${leagueId}/games/${gameId}`, `game-${gameId}.json`);
   }
 }
 

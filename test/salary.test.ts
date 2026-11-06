@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { canonicalizeGame } from "../src/data/normalize.js";
+import { canonicalizeGame, normalizePlayerRef } from "../src/data/normalize.js";
 import {
   buildSalaryLedger,
   pairSalary,
@@ -24,6 +24,43 @@ const league24: SupportedLeague = {
   lineSize: 6,
   salaryCalc: "pro_rate",
 };
+
+/** A league entry as the captured `/api/leagues` response reports it. */
+type LeagueSummary = {
+  id: number;
+  name: string;
+  statValues: "v1" | "v2";
+  lineSize: number;
+  salaryCalc: string;
+  zuluru?: string | null;
+};
+
+const leagueSummaries = JSON.parse(
+  readFileSync(`${fixturesDir}/leagues.json`, "utf8"),
+) as LeagueSummary[];
+
+/**
+ * The captured registry entry for one league, so a game from any league is
+ * canonicalized with the configuration the API itself reports rather than
+ * a hand-copied constant that could drift from it.
+ */
+function capturedLeague(leagueId: number): SupportedLeague {
+  const entry = leagueSummaries.find((summary) => summary.id === leagueId);
+  if (entry === undefined) {
+    throw new Error(`league ${leagueId} is not in the captured registry`);
+  }
+  if (entry.statValues !== "v2") {
+    throw new Error(`league ${leagueId} uses unsupported stat values ${entry.statValues}`);
+  }
+  return {
+    id: entry.id,
+    name: entry.name,
+    statValues: "v2",
+    lineSize: entry.lineSize,
+    salaryCalc: entry.salaryCalc,
+    ...(entry.zuluru === undefined ? {} : { zuluru: entry.zuluru }),
+  };
+}
 
 function statLine(pay: number, team: string | null = null): ApiStatLine {
   return {
@@ -442,12 +479,23 @@ describe("buildSalaryLedger: reconciliation warnings", () => {
 });
 
 describe("buildSalaryLedger: fixture reconciliation", () => {
-  for (const gameId of [1000, 1001]) {
+  // [game id, league id]. Game 861 holds a point scored by a player on
+  // neither recorded line; no season-24 capture does, so without it this
+  // reconciliation would never cover that case offline, which is how the
+  // original "salary reconciles exactly" claim survived a sample with no
+  // outside-line scorer.
+  const captured: Array<[number, number]> = [
+    [1000, 24],
+    [1001, 24],
+    [861, 20],
+  ];
+
+  for (const [gameId, leagueId] of captured) {
     it(`game ${gameId}: derived totals exactly match API pay for every player`, () => {
       const rawGame = JSON.parse(
         readFileSync(`${fixturesDir}/game-${gameId}.json`, "utf8"),
       ) as ApiGame;
-      const payload = canonicalizeGame(rawGame, league24);
+      const payload = canonicalizeGame(rawGame, capturedLeague(leagueId));
       const before = JSON.stringify(payload);
       const ledger = buildSalaryLedger(payload);
       expect(JSON.stringify(payload)).toBe(before);
@@ -460,6 +508,25 @@ describe("buildSalaryLedger: fixture reconciliation", () => {
       expect(ledger.warnings).toEqual([]);
     });
   }
+
+  it("game 861 really has a point scored from outside both recorded lines", () => {
+    // Non-vacuous: the fixture earns its place in the loop above by
+    // holding the case the season-24 captures lack.
+    const rawGame = JSON.parse(
+      readFileSync(`${fixturesDir}/game-861.json`, "utf8"),
+    ) as ApiGame;
+    const payload = canonicalizeGame(rawGame, capturedLeague(20));
+    const outsideScorers = payload.game.points.filter((point) =>
+      point.events.some((event) => {
+        if (event.type !== "POINT" || event.firstActor === null) return false;
+        const scorer = normalizePlayerRef(event.firstActor).name.toLowerCase();
+        return ![...point.offensePlayers, ...point.defensePlayers].some(
+          (player) => normalizePlayerRef(player.raw).name.toLowerCase() === scorer,
+        );
+      }),
+    );
+    expect(outsideScorers).toHaveLength(1);
+  });
 });
 
 describe("pairSalary", () => {
