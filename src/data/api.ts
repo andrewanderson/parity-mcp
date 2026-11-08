@@ -1,4 +1,10 @@
-import type { ApiGame, GamePayload, SupportedLeague } from "../domain/types.js";
+import type {
+  ApiGame,
+  ApiTeamPlayer,
+  ApiTeamRoster,
+  GamePayload,
+  SupportedLeague,
+} from "../domain/types.js";
 import { buildGenderMap, canonicalizeGame } from "./normalize.js";
 import {
   DataSource,
@@ -24,6 +30,33 @@ type ApiLeagueSummary = {
 
 function joinPath(baseUrl: string, suffix: string): string {
   return `${baseUrl.replace(/\/+$/, "")}${suffix}`;
+}
+
+/**
+ * Parse the teams payload into typed rosters, skipping anything malformed:
+ * a team must have a numeric `id` and a string `name`, and a player must
+ * have a string `name` and a boolean `is_open`.
+ */
+function parseTeamRoster(raw: unknown): ApiTeamRoster[] {
+  if (!Array.isArray(raw)) return [];
+  const rosters: ApiTeamRoster[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const team = entry as Record<string, unknown>;
+    if (typeof team.id !== "number" || !Number.isInteger(team.id)) continue;
+    if (typeof team.name !== "string") continue;
+    if (!Array.isArray(team.players)) continue;
+    const players: ApiTeamPlayer[] = [];
+    for (const rawPlayer of team.players) {
+      if (typeof rawPlayer !== "object" || rawPlayer === null) continue;
+      const player = rawPlayer as Record<string, unknown>;
+      if (typeof player.name !== "string") continue;
+      if (typeof player.is_open !== "boolean") continue;
+      players.push({ name: player.name, isOpen: player.is_open });
+    }
+    rosters.push({ id: team.id, name: team.name, players });
+  }
+  return rosters;
 }
 
 export class ParityApiSource implements DataSource {
@@ -113,6 +146,20 @@ export class ParityApiSource implements DataSource {
     return this.fetchJson<unknown>(
       joinPath(this.baseUrl, `/api/${resolved.id}/teams`),
     );
+  }
+
+  /**
+   * Team rosters for a league, parsed into typed players. `isOpen` is the
+   * API's `is_open` field: `true` for the Open division, `false` for Women.
+   * A malformed team or player is skipped, never fatal, matching how
+   * `buildGenderMap` handles the same payload.
+   */
+  async getTeamRoster(league: LeagueRef): Promise<ApiTeamRoster[]> {
+    const resolved = await this.resolveLeague(league);
+    const raw = await this.fetchJson<unknown>(
+      joinPath(this.baseUrl, `/api/${resolved.id}/teams`),
+    );
+    return parseTeamRoster(raw);
   }
 
   /** Week metadata as reported by the API, raw and unnormalized. */

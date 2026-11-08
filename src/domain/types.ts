@@ -126,6 +126,12 @@ export type PlayerStatLine = {
   isOpen?: boolean;
 };
 
+/** One player on a team's roster, with their division. */
+export type ApiTeamPlayer = { name: string; isOpen: boolean };
+
+/** One team and its roster, as the API reports it. */
+export type ApiTeamRoster = { id: number; name: string; players: ApiTeamPlayer[] };
+
 /**
  * A structured data-quality warning. Warnings are pure derived data owned by
  * `qualityReport`; no other function mutates or emits them on its own.

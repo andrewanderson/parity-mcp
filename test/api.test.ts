@@ -55,6 +55,20 @@ function apiSource(overrides: Record<string, unknown> = {}) {
 const V1_LEAGUE_ID = 9; // 2018/2019 Session 2 (unique in the fixture)
 const V1_LEAGUE_NAME = "2014 Spring"; // unique name, id 1
 
+// The teams payload shape as the API sends it: an array of
+// { id, name, players: [{ name, is_open, team }] }.
+const rosters25 = [
+  {
+    id: 501,
+    name: "Set Phasers to Huck",
+    players: [
+      { name: "Kyle Hunter", is_open: true, team: "Set Phasers to Huck" },
+      { name: "Bryan Mendez", is_open: false, team: "Set Phasers to Huck" },
+    ],
+  },
+  { id: 502, name: "Second Team", players: [{ name: "One Player", is_open: true, team: "Second Team" }] },
+];
+
 describe("ParityApiSource", () => {
   it("listSupportedLeagues returns only supported v2 leagues", async () => {
     const { source, calls } = apiSource();
@@ -142,6 +156,36 @@ describe("ParityApiSource", () => {
     const paths = calls.map((c) => c.path);
     expect(paths).toContain("/api/24/teams");
     expect(paths).toContain("/api/24/weeks");
+  });
+
+  it("getTeamRoster parses a team roster into typed players with division flags", async () => {
+    const { source, calls } = apiSource({ "/api/24/teams": rosters25 });
+    const rosters = await source.getTeamRoster({ id: 24 });
+    expect(rosters).toHaveLength(2);
+    expect(rosters[0].id).toBe(501);
+    expect(rosters[0].name).toBe("Set Phasers to Huck");
+    expect(rosters[0].players[0]).toEqual({ name: "Kyle Hunter", isOpen: true });
+    expect(rosters[0].players[1].isOpen).toBe(false);
+    expect(calls.map((c) => c.path)).toContain("/api/24/teams");
+  });
+
+  it("getTeamRoster skips a malformed team or player without throwing", async () => {
+    const { source } = apiSource({
+      "/api/24/teams": [
+        { id: 501, name: "Good Team", players: [{ name: "Good Player", is_open: true }] },
+        { noId: true },
+        { id: "not-a-number", name: "Bad Team", players: [] },
+        { id: 503, name: "Mixed Team", players: [{ name: 42, is_open: true }, { is_open: true }] },
+      ],
+    });
+    const rosters = await source.getTeamRoster({ id: 24 });
+    const good = rosters.find((t) => t.id === 501)!;
+    expect(good.players).toEqual([{ name: "Good Player", isOpen: true }]);
+    const mixed = rosters.find((t) => t.id === 503)!;
+    // A player whose name is not a string, or whose is_open is not a
+    // boolean, is skipped rather than fatal.
+    expect(mixed).toEqual({ id: 503, name: "Mixed Team", players: [] });
+    expect(rosters).toHaveLength(2);
   });
 
   it("never calls /schedule, /export, or non-GET methods", async () => {

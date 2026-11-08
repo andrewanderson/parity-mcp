@@ -1,4 +1,9 @@
-import type { ApiGame, GamePayload, SupportedLeague } from "../domain/types.js";
+import type {
+  ApiGame,
+  ApiTeamRoster,
+  GamePayload,
+  SupportedLeague,
+} from "../domain/types.js";
 
 /**
  * A league as chosen by the caller of a source method: how the source is
@@ -49,4 +54,6 @@ export interface DataSource {
   listSupportedLeagues(): Promise<SupportedLeague[]>;
   listGames(league: LeagueRef, options?: ListGamesOptions): Promise<ApiGame[]>;
   getGame(league: LeagueRef, gameId: number | string): Promise<GamePayload>;
+  /** Team rosters for a league, parsed into typed players. */
+  getTeamRoster(league: LeagueRef): Promise<ApiTeamRoster[]>;
 }
