@@ -82,7 +82,11 @@ export type Point = {
 
 /** The game-level core, with raw rosters preserved untouched. */
 export type GameCore = {
-  id: number;
+  /**
+   * The game's identifier as the API reports it. Newer leagues identify
+   * their games by UUID, so the id is a string as often as a number.
+   */
+  id: number | string;
   week: number;
   status: string;
   date: string | null;
@@ -193,7 +197,11 @@ export type ApiStatLine = {
 
 /** Raw game payload as captured from the API. */
 export type ApiGame = {
-  id: number;
+  /**
+   * The game's identifier as the API reports it. Newer leagues identify
+   * their games by UUID, so the id is a string as often as a number.
+   */
+  id: number | string;
   league_id: number;
   status: string;
   week: number;

@@ -30,7 +30,8 @@ import { buildPointStats } from "./engine/pointStats.js";
  */
 type GameSummary = {
   leagueId: number;
-  id: number;
+  /** The game's identifier as the API reports it: a number, or a UUID. */
+  id: number | string;
   week: number;
   status: string;
   date: string | null;
@@ -75,7 +76,7 @@ export function assembleFullGame(payload: GamePayload): FullGamePayload {
 
 /** Reduce one raw listed game to a GameSummary, keeping points out. */
 function toSummary(leagueId: number, game: {
-  id: number;
+  id: number | string;
   week: number;
   status: string;
   homeTeam: string;

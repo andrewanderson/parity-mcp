@@ -188,6 +188,32 @@ describe("ParityApiSource", () => {
     expect(rosters).toHaveLength(2);
   });
 
+  it("keeps a UUID game id through the listing and the fetch", async () => {
+    // Newer leagues address their games by UUID, so the id type has to
+    // admit a string and the id must survive canonicalization unchanged.
+    const uuid = "e5df9c1f-b861-4dc9-bf9f-2514abebb3e9";
+    const uuidGame = { ...game1000, id: uuid, league_id: 25 };
+    const { source, calls } = apiSource({
+      "/api/leagues": [
+        ...leaguesFixture,
+        { id: 25, name: "Winter Sunday Parity", lineSize: 6, statValues: "v2", salaryCalc: "pro_rate" },
+      ],
+      "/api/25/games": [uuidGame],
+      [`/api/25/games/${uuid}`]: uuidGame,
+      "/api/25/teams": teams24,
+    });
+
+    const listed = await source.listGames({ id: 25 });
+    expect(listed.map((game) => game.id)).toEqual([uuid]);
+
+    const payload = await source.getGame({ id: 25 }, uuid);
+    expect(payload.game.id).toBe(uuid);
+    // The id type admits a UUID: a game is addressed by this value.
+    const sameType: typeof payload.game.id = uuid;
+    expect(sameType).toBe(uuid);
+    expect(calls.map((c) => c.path)).toContain(`/api/25/games/${uuid}`);
+  });
+
   it("never calls /schedule, /export, or non-GET methods", async () => {
     const { source, calls } = apiSource();
     await source.listSupportedLeagues();
