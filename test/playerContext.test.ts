@@ -224,6 +224,7 @@ describe("buildPlayerContext: transitions", () => {
     expect(transition.priorTeam).toBe("Canada Geese (Jer)");
     expect(transition.returnToFranchise).toBe(true);
     expect(transition.teamNumber).toBe(2);
+    expect(transition.priorWeeksOnTeam).toEqual([1]);
     expect(transition.formerTeams).toEqual([
       { team: "Canada Geese (Jer)", franchiseLabel: "Jer", weeks: [4, 5] },
     ]);
@@ -386,5 +387,113 @@ describe("buildPlayerContext: first appearances and unaccounted weeks", () => {
     expect(context.note).toBe(
       "Earlier weeks without usable data: weeks 2, 3, 5.",
     );
+  });
+});
+
+describe("buildPlayerContext: review fixes", () => {
+  it("ignores today's own and later-week rows when deriving transitions", () => {
+    const payload = makePayload(4, ["Nick Theriault"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 2, "Team Des (Des)", ["Nick Theriault"]),
+        row(2001, 3, "Canada Geese (Jer)", ["Nick Theriault"]),
+        // Today's own final row and a later-week final row: neither may
+        // contribute a prior appearance.
+        { ...row(2001, 4, "Swing Break (Des)", ["Nick Theriault"]) },
+        row(2002, 5, "Canada Geese (Jer)", ["Nick Theriault"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.tradeDebut).toBe(true);
+    expect(transition.priorTeam).toBe("Canada Geese (Jer)");
+    expect(transition.priorWeek).toBe(3);
+    expect(transition.teamNumber).toBe(2);
+  });
+
+  it("resolves a substitute team through the existing team-resolution rules", () => {
+    const payload = makePayload(
+      2,
+      ["Kendall Carmichael(S)"],
+      ["Justin Ye"],
+      [
+        statLine("Sam Lanesmith(S)", { name: "Sam Lanesmith", team: "Unknown" }),
+        statLine("Kendall Carmichael(S)", { name: "Kendall Carmichael", team: "Unknown" }),
+      ],
+    );
+    const context = buildPlayerContext(payload, noPrior);
+    expect(context.substitutes).toEqual([
+      { player: "Sam Lanesmith", team: null },
+      { player: "Kendall Carmichael", team: "Swing Break (Des)" },
+    ]);
+  });
+
+  it("suppresses first-appearance rows when the player already appeared as a substitute", () => {
+    const payload = makePayload(2, ["Alisha Zhao"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 1, "Canada Geese (Jer)", ["Alisha Zhao(S)"])],
+    });
+    expect(
+      context.transitions.find((t) => t.player === "Alisha Zhao"),
+    ).toBeUndefined();
+  });
+
+  it("keeps a today substitute with prior registered play out of transitions", () => {
+    const payload = makePayload(2, ["Sam Lanesmith(S)"], ["Justin Ye"], [
+      statLine("Sam Lanesmith(S)", { name: "Sam Lanesmith", team: "Team Des (Des)" }),
+    ]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Team Des (Des)", ["Sam Lanesmith"]),
+        row(2001, 1, "Canada Geese (Jer)", ["Justin Ye"]),
+      ],
+    });
+    expect(context.transitions).toEqual([]);
+    expect(context.substitutes).toEqual([
+      { player: "Sam Lanesmith", team: "Team Des (Des)" },
+    ]);
+  });
+
+  it("resolves a today player to their registered side when they also appear as a sub on the other roster", () => {
+    const payload = makePayload(
+      4,
+      ["Nick Theriault(S)"],
+      ["Nick Theriault"],
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 2, "Team Des (Des)", ["Nick Theriault"])],
+    });
+    const transition = context.transitions.find(
+      (t) => t.player === "Nick Theriault",
+    );
+    expect(transition?.team).toBe("Canada Geese (Jer)");
+    expect(transition?.franchiseLabel).toBe("Jer");
+    expect(transition?.priorTeam).toBe("Team Des (Des)");
+    expect(transition?.tradeDebut).toBe(true);
+  });
+
+  it("skips transition derivation for a player registered on both rosters today", () => {
+    const payload = makePayload(4, ["Nick Theriault"], ["Nick Theriault"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 2, "Team Des (Des)", ["Nick Theriault"])],
+    });
+    expect(
+      context.transitions.find((t) => t.player === "Nick Theriault"),
+    ).toBeUndefined();
+  });
+
+  it("prefers today's roster casing for the player name", () => {
+    const payload = makePayload(4, ["Nadine Cann"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 2, "Canada Geese (Jer)", ["nadine cann"])],
+    });
+    expect(context.transitions).toHaveLength(1);
+    expect(context.transitions[0]?.player).toBe("Nadine Cann");
   });
 });

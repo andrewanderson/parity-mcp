@@ -59,6 +59,24 @@ describe("gameForLeague: player context plumbing", () => {
     expect(payload.playerContext.note).toBeNull();
   });
 
+  it("derives a debut when the list includes today's own final game", async () => {
+    const rows = [
+      { id: 2000, week: 1, status: "final", homeTeam: "Team Des (Des)", awayTeam: "Canada Geese (Jer)", homeRoster: ["Nick Theriault"], awayRoster: ["Justin Ye"] },
+      // Theriault traded to the Geese for week 2, then to Swing Break,
+      // whose own final week-3 row also appears in the list.
+      { id: 2002, week: 2, status: "final", homeTeam: "Canada Geese (Jer)", awayTeam: "The Best Buds (Al)", homeRoster: ["Nick Theriault"], awayRoster: ["Graham Brown"] },
+      { id: 2001, week: 3, status: "final", homeTeam: "Swing Break (Des)", awayTeam: "Canada Geese (Jer)", homeRoster: ["Nick Theriault"], awayRoster: ["Justin Ye"] },
+    ];
+    const source = stubSource(() => Promise.resolve(rows));
+    const { payload } = await gameForLeague(source, { id: 24 }, 2001);
+    expect(payload.playerContext.transitions).toHaveLength(1);
+    const transition = payload.playerContext.transitions[0];
+    expect(transition.player).toBe("Nick Theriault");
+    expect(transition.tradeDebut).toBe(true);
+    expect(transition.priorTeam).toBe("Canada Geese (Jer)");
+    expect(transition.priorWeek).toBe(2);
+  });
+
   it("degrades the block when listGames fails", async () => {
     const source = stubSource(() =>
       Promise.reject(new SourceError("REQUEST_FAILED", "boom")),

@@ -180,6 +180,8 @@ export type PlayerContextTransition = {
   teamNumber: number | null;
   /** No registered appearance in any earlier week. */
   firstAppearance: boolean;
+  /** Registered earlier weeks the player appeared for today's franchise. */
+  priorWeeksOnTeam: number[];
   formerTeams: PlayerContextFormerTeam[];
   opponentFormerTeams: PlayerContextFormerTeam[];
 };

@@ -127,6 +127,7 @@ playerContext: {
     returnToFranchise: boolean;    // today's franchise also in earlier weeks
     teamNumber: number | null;     // distinct franchises incl. today's; null when 1
     firstAppearance: boolean;      // no registered appearance in any earlier week
+    priorWeeksOnTeam: number[];    // registered earlier weeks for today's franchise
     // All earlier-week franchises except today's, each with the weeks the
     // player appeared for it (recorded names). Weeks are required: the sheet
     // cites a prior game by week, per the citation rules.

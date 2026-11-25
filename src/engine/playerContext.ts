@@ -1,4 +1,4 @@
-import { normalizePlayerRef } from "../data/normalize.js";
+import { normalizePlayerRef, resolvePlayerTeam } from "../data/normalize.js";
 import type {
   GamePayload,
   PlayerContextBlock,
@@ -55,7 +55,9 @@ export function buildPlayerContext(
     .filter((stat) => stat.isSubstitute)
     .map((stat) => ({
       player: normalizePlayerRef(stat.raw).name,
-      team: stat.team,
+      // Resolve through the existing team-resolution rules: a raw stats team
+      // of "Unknown" is invalid data, not an assignment.
+      team: resolvePlayerTeam(stat.raw, payload).team,
     }));
 
   if (!prior.available) {
@@ -77,7 +79,11 @@ export function buildPlayerContext(
   }
 
   const week = payload.game.week;
-  const usable = prior.rows.filter(usableRow);
+  // Only strictly earlier weeks may contribute a prior appearance: today's
+  // own final row and any later week are never transition evidence.
+  const usable = prior.rows.filter(
+    (row) => row.week >= 1 && row.week < week && usableRow(row),
+  );
   const unaccounted: number[] = [];
   for (let w = 1; w < week; w++) {
     if (!usable.some((row) => row.week === w)) {
@@ -93,7 +99,7 @@ export function buildPlayerContext(
   // A roster entry carrying the (S) marker is a substitute stint and is
   // never team membership.
   const apps = new Map<string, RegisteredAppearance[]>();
-  const names = new Map<string, string>();
+  const subPrior = new Set<string>();
   for (const row of usable) {
     for (const [teamName, roster] of [
       [row.homeTeam, row.homeRoster],
@@ -101,9 +107,13 @@ export function buildPlayerContext(
     ] as const) {
       for (const raw of roster) {
         const ref = normalizePlayerRef(raw);
-        if (ref.isSubstitute) continue;
         const key = ref.name.toLowerCase();
-        names.set(key, ref.name);
+        if (ref.isSubstitute) {
+          // Recorded substitute play still means the player has appeared
+          // this season: it suppresses first-appearance claims.
+          subPrior.add(key);
+          continue;
+        }
         const list = apps.get(key) ?? [];
         list.push({
           week: row.week,
@@ -119,20 +129,32 @@ export function buildPlayerContext(
   const awayLabel = franchiseLabel(payload.game.awayTeam);
   const transitions: PlayerContextBlock["transitions"] = [];
 
-  const todayPlayers = new Map<string, string>();
-  for (const raw of [
-    ...payload.game.homeRoster,
-    ...payload.game.awayRoster,
-  ]) {
-    const ref = normalizePlayerRef(raw);
-    if (ref.isSubstitute) continue;
-    todayPlayers.set(ref.name.toLowerCase(), ref.name);
+  // Today's registered players and the side they are registered on. A
+  // player registered on both rosters is ambiguous data: skip their
+  // transitions. An (S) entry is a substitute stint for that side and never
+  // decides a registered player's team.
+  const todaySides = new Map<string, { side: "home" | "away" | "both"; name: string }>();
+  for (const [side, roster] of [
+    ["home", payload.game.homeRoster],
+    ["away", payload.game.awayRoster],
+  ] as const) {
+    for (const raw of roster) {
+      const ref = normalizePlayerRef(raw);
+      if (ref.isSubstitute) continue;
+      const key = ref.name.toLowerCase();
+      const existing = todaySides.get(key);
+      todaySides.set(
+        key,
+        existing === undefined
+          ? { side, name: ref.name }
+          : { side: "both", name: existing.name },
+      );
+    }
   }
 
-  for (const [key, todayName] of todayPlayers) {
-    const isHome = payload.game.homeRoster.some(
-      (r) => normalizePlayerRef(r).name.toLowerCase() === key,
-    );
+  for (const [key, { side, name: todayName }] of todaySides) {
+    if (side === "both") continue;
+    const isHome = side === "home";
     const team = isHome ? payload.game.homeTeam : payload.game.awayTeam;
     const label = isHome ? homeLabel : awayLabel;
     const opponentLabel = isHome ? awayLabel : homeLabel;
@@ -162,10 +184,18 @@ export function buildPlayerContext(
     const teamNumberSet = new Set([label, ...priorLabels]);
     const teamNumber = teamNumberSet.size > 1 ? teamNumberSet.size : null;
     // A first appearance needs a registered appearance today, no registered
-    // appearance in any earlier week, and every earlier week accounted for
-    // by a usable row: absence of evidence is never the claim.
+    // appearance in any earlier week, no recorded substitute appearance in
+    // an earlier week (they have already played this season), and every
+    // earlier week accounted for by a usable row: absence of evidence is
+    // never the claim.
     const firstAppearance =
-      priorApps.length === 0 && unaccounted.length === 0;
+      priorApps.length === 0 &&
+      unaccounted.length === 0 &&
+      !subPrior.has(key);
+    const priorWeeksOnTeam = priorApps
+      .filter((app) => app.label === label)
+      .map((app) => app.week)
+      .sort((a, b) => a - b);
 
     const byLabel = new Map<string, RegisteredAppearance[]>();
     for (const app of priorApps) {
@@ -196,7 +226,7 @@ export function buildPlayerContext(
       opponentFormerTeams.length > 0
     ) {
       transitions.push({
-        player: names.get(key) ?? todayName,
+        player: todayName,
         team,
         franchiseLabel: label,
         priorTeam: latest?.team ?? null,
@@ -205,6 +235,7 @@ export function buildPlayerContext(
         returnToFranchise,
         teamNumber,
         firstAppearance,
+        priorWeeksOnTeam,
         formerTeams,
         opponentFormerTeams,
       });
