@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlayerContext, type PriorGames } from "../src/engine/playerContext.js";
+import { buildPlayerContext, type PriorGames, type PriorGameRow } from "../src/engine/playerContext.js";
 import type { GamePayload, PlayerStatLine, SupportedLeague } from "../src/domain/types.js";
 
 const LEAGUE: SupportedLeague = {
@@ -71,6 +71,23 @@ function statLine(
 
 const noPrior: PriorGames = { available: true, rows: [] };
 
+function row(
+  id: number,
+  week: number,
+  team: string,
+  roster: string[],
+): PriorGameRow {
+  return {
+    id,
+    week,
+    status: "final",
+    homeTeam: team,
+    awayTeam: "Bye Week (Bye)",
+    homeRoster: roster,
+    awayRoster: ["Roster Filler"],
+  };
+}
+
 describe("buildPlayerContext: substitutes and block skeleton", () => {
   it("lists substitutes with resolved teams", () => {
     const payload = makePayload(2, ["Nick Theriault"], ["Justin Ye"], [
@@ -115,5 +132,179 @@ describe("buildPlayerContext: substitutes and block skeleton", () => {
     expect(context.note).toBe(
       "Earlier-week data was unavailable (list failed); roster transitions were not computed.",
     );
+  });
+});
+
+describe("buildPlayerContext: transitions", () => {
+  it("reports a trade debut with prior team and week", () => {
+    const payload = makePayload(4, ["Nick Theriault"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 2, "Team Des (Des)", ["Nick Theriault"]),
+        row(2001, 3, "Canada Geese (Jer)", ["Nick Theriault"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.player).toBe("Nick Theriault");
+    expect(transition.team).toBe("Swing Break (Des)");
+    expect(transition.priorTeam).toBe("Canada Geese (Jer)");
+    expect(transition.priorWeek).toBe(3);
+    expect(transition.tradeDebut).toBe(true);
+    expect(transition.teamNumber).toBe(2);
+    expect(transition.formerTeams).toContainEqual({
+      team: "Canada Geese (Jer)",
+      franchiseLabel: "Jer",
+      weeks: [3],
+    });
+  });
+
+  it("does not count a substitute stint as team membership", () => {
+    const payload = makePayload(
+      4,
+      ["Alisha Zhao"],
+      ["Justin Ye"],
+      [],
+      "Mayflowers (Noah)",
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 2, "Team Des (Des)", ["Alisha Zhao"]),
+        row(2001, 3, "Canada Geese (Jer)", ["Alisha Zhao(S)"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.priorTeam).toBe("Team Des (Des)");
+    expect(transition.priorWeek).toBe(2);
+    expect(transition.tradeDebut).toBe(true);
+    expect(transition.teamNumber).toBe(2);
+    expect(transition.formerTeams).toEqual([
+      { team: "Team Des (Des)", franchiseLabel: "Des", weeks: [2] },
+    ]);
+  });
+
+  it("treats a renamed franchise as one franchise via captain label", () => {
+    const payload = makePayload(3, ["Nick Theriault"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Team Des (Des)", ["Nick Theriault"]),
+        row(2001, 2, "Team Des (Des)", ["Nick Theriault"]),
+        // The Geese roster registers their own players too, so the rename is
+        // the only fact under test.
+        row(2000, 1, "Canada Geese (Jer)", ["Justin Ye"]),
+        row(2001, 2, "Canada Geese (Jer)", ["Justin Ye"]),
+      ],
+    });
+    expect(context.transitions).toEqual([]);
+  });
+
+  it("reports a return to a former franchise", () => {
+    const payload = makePayload(
+      6,
+      ["Alisha Zhao"],
+      ["Justin Ye"],
+      [],
+      "Mayflowers (Noah)",
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Mayflowers (Noah)", ["Alisha Zhao"]),
+        row(2001, 4, "Canada Geese (Jer)", ["Alisha Zhao"]),
+        row(2002, 5, "Canada Geese (Jer)", ["Alisha Zhao"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.tradeDebut).toBe(true);
+    expect(transition.priorTeam).toBe("Canada Geese (Jer)");
+    expect(transition.returnToFranchise).toBe(true);
+    expect(transition.teamNumber).toBe(2);
+    expect(transition.formerTeams).toEqual([
+      { team: "Canada Geese (Jer)", franchiseLabel: "Jer", weeks: [4, 5] },
+    ]);
+  });
+
+  it("counts distinct franchises as teamNumber, null when 1", () => {
+    const payload = makePayload(
+      6,
+      ["Alisha Zhao"],
+      ["Justin Ye"],
+      [],
+      "Mayflowers (Noah)",
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Mayflowers (Noah)", ["Alisha Zhao"]),
+        row(2001, 3, "Canada Geese (Jer)", ["Alisha Zhao"]),
+        row(2002, 5, "Team Des (Des)", ["Alisha Zhao"]),
+      ],
+    });
+    expect(context.transitions[0]?.teamNumber).toBe(3);
+    expect(context.transitions[0]?.returnToFranchise).toBe(true);
+
+    const sameTeam = buildPlayerContext(
+      makePayload(4, ["Nick Theriault"], ["Justin Ye"]),
+      {
+        available: true,
+        rows: [row(2000, 2, "Swing Break (Des)", ["Nick Theriault"])],
+      },
+    );
+    expect(sameTeam.transitions).toEqual([]);
+  });
+
+  it("builds former-opponent subsets from the opponent label", () => {
+    const payload = makePayload(
+      6,
+      ["Alisha Zhao"],
+      ["Justin Ye"],
+      [],
+      "Mayflowers (Noah)",
+      "Canada Geese (Jer)",
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 2, "Team Des (Des)", ["Alisha Zhao"]),
+        row(2001, 3, "Team Des (Des)", ["Alisha Zhao"]),
+        row(2002, 4, "Canada Geese (Jer)", ["Alisha Zhao"]),
+        row(2003, 5, "Canada Geese (Jer)", ["Alisha Zhao"]),
+      ],
+    });
+    expect(context.transitions[0]?.formerTeams).toEqual([
+      { team: "Team Des (Des)", franchiseLabel: "Des", weeks: [2, 3] },
+      { team: "Canada Geese (Jer)", franchiseLabel: "Jer", weeks: [4, 5] },
+    ]);
+    expect(context.transitions[0]?.opponentFormerTeams).toEqual([
+      { team: "Canada Geese (Jer)", franchiseLabel: "Jer", weeks: [4, 5] },
+    ]);
+  });
+
+  it("omits transition rows when a player has two registered games in one earlier week", () => {
+    const payload = makePayload(4, ["Nick Theriault"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 2, "Team Des (Des)", ["Nick Theriault"]),
+        row(2001, 2, "Canada Geese (Jer)", ["Nick Theriault"]),
+      ],
+    });
+    expect(
+      context.transitions.find((t) => t.player === "Nick Theriault"),
+    ).toBeUndefined();
+  });
+
+  it("omits players whose only prior franchise is today's", () => {
+    const payload = makePayload(4, ["Nick Theriault"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 2, "Swing Break (Des)", ["Nick Theriault"])],
+    });
+    expect(context.transitions).toEqual([]);
   });
 });
