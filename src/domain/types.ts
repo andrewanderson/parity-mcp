@@ -152,6 +152,62 @@ export type QualityReport = {
   warnings: QualityWarning[];
 };
 
+/** One franchise the player appeared for in an earlier week, with its weeks. */
+export type PlayerContextFormerTeam = {
+  /** Recorded name, most recent for the franchise. */
+  team: string;
+  franchiseLabel: string;
+  weeks: number[];
+};
+
+/**
+ * One player's roster transition within the current league, derived from
+ * registered (non-substitute) roster appearances in earlier-week games.
+ */
+export type PlayerContextTransition = {
+  player: string;
+  /** Today's team, recorded name. */
+  team: string;
+  franchiseLabel: string;
+  /** The latest registered earlier-week appearance; null for a first appearance. */
+  priorTeam: string | null;
+  priorWeek: number | null;
+  /** Prior franchise exists and differs from today's. */
+  tradeDebut: boolean;
+  /** Today's franchise also appears in the player's earlier-week history. */
+  returnToFranchise: boolean;
+  /** Distinct franchises this season including today's; null when 1. */
+  teamNumber: number | null;
+  /** No registered appearance in any earlier week. */
+  firstAppearance: boolean;
+  formerTeams: PlayerContextFormerTeam[];
+  opponentFormerTeams: PlayerContextFormerTeam[];
+};
+
+/** Recap context for one game: substitutes and roster transitions. */
+export type PlayerContextBlock = {
+  substitutes: Array<{ player: string; team: string | null }>;
+  transitions: PlayerContextTransition[];
+  priorDataAvailable: boolean;
+  /**
+   * Null, or one plain sentence: why prior data is unavailable, or which
+   * earlier weeks are unaccounted, or that the season's first week has no
+   * prior games.
+   */
+  note: string | null;
+};
+
+/** One prior-week listed game row, carrying only what transitions need. */
+export type PriorGameRow = {
+  id: number | string;
+  week: number;
+  status: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeRoster: RawPlayerRef[];
+  awayRoster: RawPlayerRef[];
+};
+
 /**
  * Raw event as captured from the API.
  *
