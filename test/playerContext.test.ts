@@ -308,3 +308,83 @@ describe("buildPlayerContext: transitions", () => {
     expect(context.transitions).toEqual([]);
   });
 });
+
+describe("buildPlayerContext: first appearances and unaccounted weeks", () => {
+  it("reports a first appearance when every earlier week is accounted", () => {
+    const payload = makePayload(3, ["Tiger Ye"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Canada Geese (Jer)", ["Justin Ye"]),
+        row(2001, 2, "Canada Geese (Jer)", ["Justin Ye"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.player).toBe("Tiger Ye");
+    expect(transition.firstAppearance).toBe(true);
+    expect(transition.priorTeam).toBeNull();
+    expect(transition.priorWeek).toBeNull();
+    expect(transition.tradeDebut).toBe(false);
+    expect(transition.teamNumber).toBeNull();
+    expect(transition.returnToFranchise).toBe(false);
+    expect(transition.formerTeams).toEqual([]);
+    expect(context.note).toBeNull();
+  });
+
+  it("suppresses first-appearance rows when an earlier week is missing entirely", () => {
+    const payload = makePayload(3, ["Tiger Ye"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [row(2000, 1, "Canada Geese (Jer)", ["Justin Ye"])],
+    });
+    expect(
+      context.transitions.find((t) => t.player === "Tiger Ye"),
+    ).toBeUndefined();
+    expect(context.priorDataAvailable).toBe(true);
+    expect(context.note).toBe(
+      "Earlier weeks without usable data: weeks 2.",
+    );
+  });
+
+  it("suppresses first-appearance rows when an earlier week has no usable row", () => {
+    const payload = makePayload(3, ["Tiger Ye"], ["Justin Ye"]);
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Canada Geese (Jer)", ["Justin Ye"]),
+        { ...row(2001, 2, "Canada Geese (Jer)", ["Justin Ye"]), status: "scheduled" },
+      ],
+    });
+    expect(
+      context.transitions.find((t) => t.player === "Tiger Ye"),
+    ).toBeUndefined();
+    expect(context.note).toBe(
+      "Earlier weeks without usable data: weeks 2.",
+    );
+  });
+
+  it("keeps debut and return rows when a week is unaccounted", () => {
+    const payload = makePayload(
+      6,
+      ["Alisha Zhao"],
+      ["Justin Ye"],
+      [],
+      "Mayflowers (Noah)",
+    );
+    const context = buildPlayerContext(payload, {
+      available: true,
+      rows: [
+        row(2000, 1, "Mayflowers (Noah)", ["Alisha Zhao"]),
+        row(2001, 4, "Canada Geese (Jer)", ["Alisha Zhao"]),
+      ],
+    });
+    expect(context.transitions).toHaveLength(1);
+    const transition = context.transitions[0];
+    expect(transition.returnToFranchise).toBe(true);
+    expect(transition.priorTeam).toBe("Canada Geese (Jer)");
+    expect(context.note).toBe(
+      "Earlier weeks without usable data: weeks 2, 3, 5.",
+    );
+  });
+});

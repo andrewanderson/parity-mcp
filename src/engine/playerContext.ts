@@ -78,6 +78,16 @@ export function buildPlayerContext(
 
   const week = payload.game.week;
   const usable = prior.rows.filter(usableRow);
+  const unaccounted: number[] = [];
+  for (let w = 1; w < week; w++) {
+    if (!usable.some((row) => row.week === w)) {
+      unaccounted.push(w);
+    }
+  }
+  const gapNote =
+    unaccounted.length > 0
+      ? `Earlier weeks without usable data: weeks ${unaccounted.join(", ")}.`
+      : null;
 
   // Registered appearances per identity key, from roster membership only.
   // A roster entry carrying the (S) marker is a substitute stint and is
@@ -151,9 +161,11 @@ export function buildPlayerContext(
     const returnToFranchise = tradeDebut && priorLabels.has(label);
     const teamNumberSet = new Set([label, ...priorLabels]);
     const teamNumber = teamNumberSet.size > 1 ? teamNumberSet.size : null;
-    // First appearances and unaccounted-week notes arrive with the
-    // absence rules (plan Task 3).
-    const firstAppearance = false;
+    // A first appearance needs a registered appearance today, no registered
+    // appearance in any earlier week, and every earlier week accounted for
+    // by a usable row: absence of evidence is never the claim.
+    const firstAppearance =
+      priorApps.length === 0 && unaccounted.length === 0;
 
     const byLabel = new Map<string, RegisteredAppearance[]>();
     for (const app of priorApps) {
@@ -205,6 +217,6 @@ export function buildPlayerContext(
     substitutes,
     transitions,
     priorDataAvailable: true,
-    note: null,
+    note: gapNote,
   };
 }
