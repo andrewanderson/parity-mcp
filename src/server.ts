@@ -3,6 +3,7 @@ import { z } from "zod";
 import type {
   GamePayload,
   LeagueSummary,
+  PlayerContextBlock,
   SupportedLeague,
 } from "./domain/types.js";
 import type { DataSource, LeagueRef, ListGamesOptions } from "./data/source.js";
@@ -23,6 +24,10 @@ import {
   type InteractionsPayload,
 } from "./engine/interactions.js";
 import { buildPointStats } from "./engine/pointStats.js";
+import {
+  buildPlayerContext,
+  type PriorGames,
+} from "./engine/playerContext.js";
 
 /**
  * A summary of one listed game: raw list data reduced to its identifying
@@ -48,6 +53,7 @@ export type FullGamePayload = GamePayload & {
   storyFacts: GameStoryFacts;
   narrative: NarrativePayload;
   interactions: InteractionsPayload;
+  playerContext: PlayerContextBlock;
 };
 
 /** The InteractionsPayload re-exported directly, as the tool returns exactly it. */
@@ -57,9 +63,11 @@ export type { InteractionsPayload };
  * Assemble the full canonical game payload by running every derived stage on
  * one canonical payload. Pure: the input payload is never mutated. The derived
  * stages run in dependency order: salary first, interactions need the ledger;
- * narrative is independent and runs after the story facts.
+ * narrative is independent and runs after the story facts. The source-dependent
+ * `playerContext` block is attached later by `gameForLeague`, so it is absent
+ * here.
  */
-export function assembleFullGame(payload: GamePayload): FullGamePayload {
+export function assembleFullGame(payload: GamePayload): Omit<FullGamePayload, "playerContext"> {
   const salaryLedger = buildSalaryLedger(payload);
   const { timeline, storyFacts } = buildScoreTimelineAndStoryFacts(payload);
   const narrative = buildNarrative(payload);
@@ -131,13 +139,40 @@ function leagueMatches(ref: LeagueRef, league: SupportedLeague): boolean {
 }
 
 /**
+ * Fetch the league's earlier-week list rows for the player context block.
+ * Prior-week context is an enhancement, never a failure: a list problem
+ * degrades to `priorDataAvailable: false` with a note rather than failing
+ * the game request. Week 1 needs no prior data and never fetches.
+ */
+async function playerContextFor(
+  source: DataSource,
+  league: SupportedLeague,
+  payload: GamePayload,
+): Promise<PlayerContextBlock> {
+  let prior: PriorGames;
+  if (payload.game.week <= 1) {
+    prior = { available: true, rows: [] };
+  } else {
+    try {
+      prior = { available: true, rows: await source.listGames(league) };
+    } catch (cause) {
+      prior = {
+        available: false,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+  }
+  return buildPlayerContext(payload, prior);
+}
+
+/**
  * The single supporting league for one game, by probing supported leagues.
  * Only a not-found in a league is expected during probing and only that ends
  * with the aggregated GAME_NOT_FOUND. Every other failure (a failed request,
  * an unsupported league version, a malformed response) is propagated as-is so
  * callers see the original error class, not a misleading not-found.
  */
-async function gameForLeague(
+export async function gameForLeague(
   source: DataSource,
   ref: LeagueRef | undefined,
   gameId: number | string,
@@ -160,7 +195,12 @@ async function gameForLeague(
           league,
         );
       }
-      return { payload: assembleFullGame(payload), league };
+      const assembled = assembleFullGame(payload);
+      const full: FullGamePayload = {
+        ...assembled,
+        playerContext: await playerContextFor(source, league, payload),
+      };
+      return { payload: full, league };
     } catch (cause) {
       if (isGameNotFoundError(cause)) {
         lastNotFound =
@@ -266,7 +306,7 @@ export function createParityServer(options: ParityServerOptions): McpServer {
     "parity_get_game",
     {
       description:
-        "Get one canonical game payload with salary ledger, score timeline, story facts, narrative shape, and interactions; persists the game automatically.",
+        "Get one canonical game payload with salary ledger, score timeline, story facts, narrative shape, interactions, and player context (substitutes, trade debuts, returns, first appearances, former-team opponents); persists the game automatically.",
       inputSchema: {
         league: z.union([z.number().int(), z.string()]).optional(),
         gameId: z.union([z.number().int(), z.string()]),
